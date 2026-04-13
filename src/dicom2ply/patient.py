@@ -1,83 +1,208 @@
+from __future__ import annotations
+
 import os
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import Path
 
 import pydicom
+from pydicom.dataset import FileDataset
 
-from dicom2ply.ct_cache import CTSliceCache
 from dicom2ply.roi import RegionOfInterest
 
 
+@dataclass(frozen=True)
+class CTSlice:
+    sop_uid: str
+    path: Path
+    z: float
+
+
 class Patient:
-    def __init__(self, dicom_dir: str, debug: bool = True) -> None:
+
+    def __init__(
+        self,
+        dicom_dir: str | Path,
+        debug: bool = True,
+        *,
+        reader: Callable[..., FileDataset] = pydicom.dcmread,
+        walker: Callable[..., Iterable] = os.walk,
+    ) -> None:
         self.debug = debug
-        self.dicom_dir = dicom_dir
+        self.dicom_dir = Path(dicom_dir)
+        self._reader = reader
+        self._walker = walker
 
-        _, _, files = next(os.walk(self.dicom_dir))
-        self.files = files
+        self._files = self._scan_files()
 
-        rtstruct_path = self._find_rtstruct()
-        self.structure = pydicom.dcmread(rtstruct_path)
+        # Tests expect this exact attribute name
+        self.structure: FileDataset = self._load_rtstruct()
 
-        self.ct_slices = self._index_ct_slices()
-        self.ct_index = self.ct_slices
+        # Deterministic CT slice index
+        self._ct_slices = self._index_ct_slices()
 
-        self.region_names = self._extract_roi_names()
-        self.regions = self._load_rois()
+        # Tests expect ct_slices and ct_index as SOPUID -> path strings
+        self.ct_slices: dict[str, str] = {
+            uid: s.path.as_posix() for uid, s in self._ct_slices.items()
+        }
+        self.ct_index: dict[str, str] = dict(self.ct_slices)
 
-    def _find_rtstruct(self) -> str:
-        for f in self.files:
-            if f.startswith("RS"):
-                return os.path.join(self.dicom_dir, f)
-        raise FileNotFoundError("No RTSTRUCT (RS*) file found in directory")
+        # ROI metadata
+        self.region_names = self._extract_roi_names()  # legacy name
+        self._roi_cache: dict[str, RegionOfInterest] = {}
 
-    def _index_ct_slices(self) -> dict[str, str]:
-        index = {}
-        for f in self.files:
-            path = os.path.join(self.dicom_dir, f)
-            try:
-                ds = pydicom.dcmread(path, stop_before_pixels=True)
-            except Exception:
+    @property
+    def roi_names(self) -> list[str]:
+        """List of ROI names available in the RTSTRUCT (for CLI validation)."""
+        return list(self.region_names.values())
+
+    @property
+    def regions(self) -> dict[str, RegionOfInterest]:
+        """
+        Backwards-compatible mapping of ROI name -> RegionOfInterest.
+
+        Semantics match the original implementation:
+        - Iterate ROIContourSequence
+        - Skip entries without a known name or without ContourSequence
+        - If ROIContourSequence is empty, return {}
+        - Never raise errors
+        """
+        if self._roi_cache:
+            return dict(self._roi_cache)
+
+        roi_contours = getattr(self.structure, "ROIContourSequence", None)
+        if not roi_contours:
+            return {}
+
+        for roi in roi_contours:
+            number = getattr(roi, "ReferencedROINumber", None)
+            if number is None:
                 continue
-            if getattr(ds, "Modality", None) == "CT":
-                sop = getattr(ds, "SOPInstanceUID", None)
-                if sop:
-                    index[sop] = path
-        return index
 
-    def _extract_roi_names(self) -> dict[int, str]:
-        names = {}
-        for obs in self.structure.RTROIObservationsSequence:
-            names[obs.ObservationNumber] = obs.ROIObservationLabel
-        return names
-
-    def _load_rois(self) -> dict[str, RegionOfInterest]:
-        cache = CTSliceCache(self.ct_index)
-        regions = {}
-
-        for roi in self.structure.ROIContourSequence:
-            number = roi.ReferencedROINumber
-            name = self.region_names.get(number)
+            name = self.region_names.get(int(number))
             if name is None:
                 continue
+
             if not hasattr(roi, "ContourSequence"):
                 continue
+
             region = RegionOfInterest.from_rt_roi(
                 roi_ds=roi,
                 name=name,
                 bins=4096,
                 ct_index=self.ct_index,
             )
-            regions[name] = region
+            self._roi_cache[name] = region
 
-        return regions
+        return dict(self._roi_cache)
 
-    def dump_ply(self, directory=".", names=None) -> None:
-        if names is None:
-            names = list(self.regions.keys())
+    def get_roi(self, name: str) -> RegionOfInterest:
+        """Return a single ROI by name, loading it on demand."""
+        if name not in self.roi_names:
+            raise KeyError(f"ROI '{name}' not found. Available: {self.roi_names}")
 
-        if not names:
-            raise ValueError("No ROIs found in RTSTRUCT")
+        if name in self._roi_cache:
+            return self._roi_cache[name]
 
+        roi = self._load_single_roi(name)
+        self._roi_cache[name] = roi
+        return roi
+
+    def dump_ply(
+        self,
+        directory: str | Path = ".",
+        names: Iterable[str] | None = None,
+    ) -> None:
+        """Export selected ROIs to PLY files."""
         from dicom2ply.ply_writer import write_roi_ply
 
-        for name in names:
-            write_roi_ply(self.regions[name], directory)
+        if names is None:
+            names = self.roi_names
+
+        selected = list(names)
+        if not selected:
+            raise ValueError("No ROIs found in RTSTRUCT or no names provided.")
+
+        for name in selected:
+            roi = self.get_roi(name)
+            write_roi_ply(roi, directory)
+
+    def _scan_files(self) -> list[Path]:
+        try:
+            _, _, files = next(self._walker(self.dicom_dir))
+        except StopIteration:
+            raise FileNotFoundError(f"No files found in directory: {self.dicom_dir}")
+
+        return [self.dicom_dir / f for f in files]
+
+    def _load_rtstruct(self) -> FileDataset:
+        for path in self._files:
+            try:
+                ds = self._reader(path, stop_before_pixels=True)
+            except Exception:
+                continue
+
+            if getattr(ds, "Modality", None) == "RTSTRUCT":
+                return ds
+
+        raise FileNotFoundError("No RTSTRUCT file found (Modality=RTSTRUCT).")
+
+    def _index_ct_slices(self) -> dict[str, CTSlice]:
+        slices: list[CTSlice] = []
+
+        for path in self._files:
+            try:
+                ds = self._reader(path, stop_before_pixels=True)
+            except Exception:
+                continue
+
+            if getattr(ds, "Modality", None) != "CT":
+                continue
+
+            sop = getattr(ds, "SOPInstanceUID", None)
+            if sop is None:
+                continue
+
+            ipp = getattr(ds, "ImagePositionPatient", None)
+            z = float(ipp[2]) if ipp and len(ipp) >= 3 else 0.0
+
+            slices.append(CTSlice(sop_uid=sop, path=path, z=z))
+
+        slices.sort(key=lambda s: s.z)
+        return {s.sop_uid: s for s in slices}
+
+    def _extract_roi_names(self) -> dict[int, str]:
+        names: dict[int, str] = {}
+        seq = getattr(self.structure, "RTROIObservationsSequence", [])
+        for obs in seq:
+            number = int(obs.ObservationNumber)
+            label = str(obs.ROIObservationLabel)
+            names[number] = label
+        return names
+
+    def _load_single_roi(self, name: str) -> RegionOfInterest:
+        roi_number = None
+        for number, label in self.region_names.items():
+            if label == name:
+                roi_number = number
+                break
+
+        if roi_number is None:
+            raise KeyError(f"ROI '{name}' not found in RTROIObservationsSequence.")
+
+        roi_contours = getattr(self.structure, "ROIContourSequence", [])
+        for roi in roi_contours:
+            if int(getattr(roi, "ReferencedROINumber", -1)) != roi_number:
+                continue
+
+            if not hasattr(roi, "ContourSequence"):
+                raise KeyError(f"ROI '{name}' has no ContourSequence data.")
+
+            return RegionOfInterest.from_rt_roi(
+                roi_ds=roi,
+                name=name,
+                bins=4096,
+                ct_index=self.ct_index,
+            )
+
+        raise KeyError(f"ROI '{name}' not found in ROIContourSequence.")

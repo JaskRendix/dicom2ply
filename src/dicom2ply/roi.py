@@ -46,10 +46,6 @@ class RegionOfInterest:
         obj.compute_mask_stack()
         return obj
 
-    # ---------------------------------------------------------
-    # ROI-level statistics
-    # ---------------------------------------------------------
-
     def compute_stats(self):
         if not self.contours:
             return
@@ -64,10 +60,6 @@ class RegionOfInterest:
         self.median = float(np.median(values))
         self.sum = float(values.sum())
         self.count = int(values.size)
-
-    # ---------------------------------------------------------
-    # Spatial extent
-    # ---------------------------------------------------------
 
     def compute_extent(self):
         if not self.contours:
@@ -85,10 +77,6 @@ class RegionOfInterest:
             float(zs.min()),
             float(zs.max()),
         )
-
-    # ---------------------------------------------------------
-    # 3D mask stack
-    # ---------------------------------------------------------
 
     def compute_mask_stack(self):
         if not self.contours:
