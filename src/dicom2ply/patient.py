@@ -124,7 +124,11 @@ class Patient:
             raise ValueError("No ROIs found in RTSTRUCT or no names provided.")
 
         for name in selected:
-            roi = self.get_roi(name)
+            try:
+                roi = self.get_roi(name)
+            except KeyError as e:
+                raise ValueError(f"Cannot export ROI '{name}': {e}") from e
+
             write_roi_ply(roi, directory)
 
     def _load_rtstruct(self) -> FileDataset:
@@ -156,7 +160,11 @@ class Patient:
                 continue
 
             ipp = getattr(ds, "ImagePositionPatient", None)
-            z = float(ipp[2]) if ipp and len(ipp) >= 3 else 0.0
+            if ipp and len(ipp) >= 3:
+                z = float(ipp[2])
+            else:
+                # safer fallback than collapsing everything to 0.0
+                z = float(getattr(ds, "InstanceNumber", 0))
 
             slices.append(CTSlice(sop_uid=sop, path=path, z=z))
 
@@ -165,11 +173,21 @@ class Patient:
 
     def _extract_roi_names(self) -> dict[int, str]:
         names: dict[int, str] = {}
+
         seq = getattr(self.structure, "RTROIObservationsSequence", [])
         for obs in seq:
             number = int(obs.ObservationNumber)
             label = str(obs.ROIObservationLabel)
             names[number] = label
+
+        # Fallback: some RTSTRUCTs only populate StructureSetROISequence
+        if not names:
+            seq2 = getattr(self.structure, "StructureSetROISequence", [])
+            for roi in seq2:
+                number = int(roi.ROINumber)
+                label = str(roi.ROIName)
+                names[number] = label
+
         return names
 
     def _load_single_roi(self, name: str) -> RegionOfInterest:
