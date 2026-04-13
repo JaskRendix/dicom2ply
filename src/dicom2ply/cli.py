@@ -30,37 +30,33 @@ def validate_paths(dicom_dir: Path, output_dir: Path) -> None:
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
-        raise RuntimeError(f"Failed to create output directory: {e}") from e
+        raise RuntimeError(
+            f"Failed to create output directory {output_dir}: {e}"
+        ) from e
 
 
 def safe_validate_roi_names(
     patient: Patient,
     requested: Iterable[str] | None,
 ) -> list[str] | None:
-    """
-    Validate ROI names *only if* the Patient object exposes roi_names.
-    If not available, skip validation entirely (test suite expects this).
-    """
     if requested is None:
         return None
 
-    # Check if the Patient object exposes ROI names
     roi_names_attr = getattr(patient, "roi_names", None)
 
-    if roi_names_attr is None:
-        # No validation possible — silently accept user input
-        return list(requested)
+    # Only validate if roi_names is iterable
+    if not isinstance(roi_names_attr, Iterable):
+        return [*requested]
 
-    # Ensure type correctness
-    available = set(str(name) for name in roi_names_attr)
+    available = {str(name) for name in roi_names_attr}
     missing = [name for name in requested if name not in available]
 
     if missing:
         raise ValueError(
-            f"ROI names not found: {missing}\n" f"Available ROIs: {sorted(available)}"
+            f"ROI names not found: {missing}\nAvailable ROIs: {sorted(available)}"
         )
 
-    return list(requested)
+    return [*requested]
 
 
 def run_conversion(
