@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,14 +25,15 @@ class Patient:
         debug: bool = True,
         *,
         reader: Callable[..., FileDataset] = pydicom.dcmread,
-        walker: Callable[..., Iterable] = os.walk,
+        walker: Callable[[Path], Iterable[Path]] | None = None,
     ) -> None:
         self.debug = debug
         self.dicom_dir = Path(dicom_dir)
         self._reader = reader
-        self._walker = walker
 
-        self._files = self._scan_files()
+        self._walker = walker or (lambda p: (f for f in p.iterdir() if f.is_file()))
+
+        self._files = list(self._walker(self.dicom_dir))
 
         # Tests expect this exact attribute name
         self.structure: FileDataset = self._load_rtstruct()
@@ -126,14 +126,6 @@ class Patient:
         for name in selected:
             roi = self.get_roi(name)
             write_roi_ply(roi, directory)
-
-    def _scan_files(self) -> list[Path]:
-        try:
-            _, _, files = next(self._walker(self.dicom_dir))
-        except StopIteration:
-            raise FileNotFoundError(f"No files found in directory: {self.dicom_dir}")
-
-        return [self.dicom_dir / f for f in files]
 
     def _load_rtstruct(self) -> FileDataset:
         for path in self._files:
