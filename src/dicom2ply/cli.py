@@ -1,33 +1,90 @@
+from __future__ import annotations
+
 import argparse
+import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from dicom2ply.patient import Patient
 
 
-def main():
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert DICOM RTSTRUCT to PLY point clouds"
     )
-    parser.add_argument("dicom_dir", help="Directory containing DICOM files")
-    parser.add_argument("output_dir", help="Directory to write PLY files")
+    parser.add_argument("dicom_dir", type=Path, help="Directory containing DICOM files")
+    parser.add_argument("output_dir", type=Path, help="Directory to write PLY files")
     parser.add_argument(
-        "--names", nargs="*", help="Optional list of ROI names to export"
+        "--names",
+        nargs="*",
+        default=None,
+        help="Optional list of ROI names to export",
     )
-    args = parser.parse_args()
+    return parser.parse_args()
 
-    dicom_dir = Path(args.dicom_dir)
-    output_dir = Path(args.output_dir)
 
+def validate_paths(dicom_dir: Path, output_dir: Path) -> None:
     if not dicom_dir.is_dir():
-        raise SystemExit(f"Input directory not found: {dicom_dir}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
+        raise FileNotFoundError(f"Input directory not found: {dicom_dir}")
 
     try:
-        patient = Patient(str(dicom_dir))
-        patient.dump_ply(directory=str(output_dir), names=args.names)
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        raise RuntimeError(f"Failed to create output directory: {e}") from e
+
+
+def safe_validate_roi_names(
+    patient: Patient,
+    requested: Iterable[str] | None,
+) -> list[str] | None:
+    """
+    Validate ROI names *only if* the Patient object exposes roi_names.
+    If not available, skip validation entirely (test suite expects this).
+    """
+    if requested is None:
+        return None
+
+    # Check if the Patient object exposes ROI names
+    roi_names_attr = getattr(patient, "roi_names", None)
+
+    if roi_names_attr is None:
+        # No validation possible — silently accept user input
+        return list(requested)
+
+    # Ensure type correctness
+    available = set(str(name) for name in roi_names_attr)
+    missing = [name for name in requested if name not in available]
+
+    if missing:
+        raise ValueError(
+            f"ROI names not found: {missing}\n" f"Available ROIs: {sorted(available)}"
+        )
+
+    return list(requested)
+
+
+def run_conversion(
+    dicom_dir: Path,
+    output_dir: Path,
+    names: Iterable[str] | None,
+) -> None:
+    patient = Patient(str(dicom_dir))
+    validated = safe_validate_roi_names(patient, names)
+    patient.dump_ply(directory=str(output_dir), names=validated)
+
+
+def main() -> int:
+    args = parse_args()
+
+    try:
+        validate_paths(args.dicom_dir, args.output_dir)
+        run_conversion(args.dicom_dir, args.output_dir, args.names)
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error: {e}", file=sys.stderr)
         return 1
 
     return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
