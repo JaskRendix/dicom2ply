@@ -18,7 +18,6 @@ class CTSlice:
 
 
 class Patient:
-
     def __init__(
         self,
         dicom_dir: str | Path,
@@ -30,16 +29,19 @@ class Patient:
         self.debug = debug
         self.dicom_dir = Path(dicom_dir)
         self._reader = reader
-
         self._walker = walker or (lambda p: (f for f in p.iterdir() if f.is_file()))
 
-        self._files = list(self._walker(self.dicom_dir))
+        # All files in the directory (tests expect this attribute name)
+        self._files: list[Path] = list(self._walker(self.dicom_dir))
+
+        # Single-pass read cache: Path -> FileDataset
+        self._datasets: dict[Path, FileDataset] = self._read_all_datasets()
 
         # Tests expect this exact attribute name
         self.structure: FileDataset = self._load_rtstruct()
 
         # Deterministic CT slice index
-        self._ct_slices = self._index_ct_slices()
+        self._ct_slices: dict[str, CTSlice] = self._index_ct_slices()
 
         # Tests expect ct_slices and ct_index as SOPUID -> path strings
         self.ct_slices: dict[str, str] = {
@@ -48,8 +50,17 @@ class Patient:
         self.ct_index: dict[str, str] = dict(self.ct_slices)
 
         # ROI metadata
-        self.region_names = self._extract_roi_names()  # legacy name
+        self.region_names: dict[int, str] = self._extract_roi_names()  # legacy name
+
+        # Pre-index ROIContourSequence by ReferencedROINumber for O(1) lookup
+        self._roi_by_number: dict[int, FileDataset] = self._index_roi_contours()
+
+        # Lazy cache of ROI name -> RegionOfInterest
         self._roi_cache: dict[str, RegionOfInterest] = {}
+
+    # -------------------------------------------------------------------------
+    # Public API
+    # -------------------------------------------------------------------------
 
     @property
     def roi_names(self) -> list[str]:
@@ -86,6 +97,10 @@ class Patient:
             if not hasattr(roi, "ContourSequence"):
                 continue
 
+            # Avoid recomputing if already cached via get_roi
+            if name in self._roi_cache:
+                continue
+
             region = RegionOfInterest.from_rt_roi(
                 roi_ds=roi,
                 name=name,
@@ -101,8 +116,10 @@ class Patient:
         if name not in self.roi_names:
             raise KeyError(f"ROI '{name}' not found. Available: {self.roi_names}")
 
-        if name in self._roi_cache:
+        try:
             return self._roi_cache[name]
+        except KeyError:
+            pass
 
         roi = self._load_single_roi(name)
         self._roi_cache[name] = roi
@@ -131,11 +148,29 @@ class Patient:
 
             write_roi_ply(roi, directory)
 
-    def _load_rtstruct(self) -> FileDataset:
+    # -------------------------------------------------------------------------
+    # Internal helpers: DICOM loading and indexing
+    # -------------------------------------------------------------------------
+
+    def _read_all_datasets(self) -> dict[Path, FileDataset]:
+        """
+        Read all DICOM files once, without pixel data, and cache them.
+
+        This avoids repeated I/O in _load_rtstruct and _index_ct_slices.
+        """
+        datasets: dict[Path, FileDataset] = {}
         for path in self._files:
             try:
                 ds = self._reader(path, stop_before_pixels=True)
             except Exception:
+                continue
+            datasets[path] = ds
+        return datasets
+
+    def _load_rtstruct(self) -> FileDataset:
+        for path in self._files:
+            ds = self._datasets.get(path)
+            if ds is None:
                 continue
 
             if getattr(ds, "Modality", None) == "RTSTRUCT":
@@ -147,9 +182,8 @@ class Patient:
         slices: list[CTSlice] = []
 
         for path in self._files:
-            try:
-                ds = self._reader(path, stop_before_pixels=True)
-            except Exception:
+            ds = self._datasets.get(path)
+            if ds is None:
                 continue
 
             if getattr(ds, "Modality", None) != "CT":
@@ -161,37 +195,84 @@ class Patient:
 
             ipp = getattr(ds, "ImagePositionPatient", None)
             if ipp and len(ipp) >= 3:
-                z = float(ipp[2])
+                try:
+                    z = float(ipp[2])
+                except (TypeError, ValueError):
+                    z = float(getattr(ds, "InstanceNumber", 0))
             else:
                 # safer fallback than collapsing everything to 0.0
                 z = float(getattr(ds, "InstanceNumber", 0))
 
-            slices.append(CTSlice(sop_uid=sop, path=path, z=z))
+            slices.append(CTSlice(sop_uid=str(sop), path=path, z=z))
 
         slices.sort(key=lambda s: s.z)
         return {s.sop_uid: s for s in slices}
 
     def _extract_roi_names(self) -> dict[int, str]:
+        """
+        Build a mapping ObservationNumber/ROINumber -> ROI name.
+
+        Primary source: RTROIObservationsSequence (ROIObservationLabel).
+        Fallback: StructureSetROISequence (ROIName).
+        """
         names: dict[int, str] = {}
 
         seq = getattr(self.structure, "RTROIObservationsSequence", [])
         for obs in seq:
-            number = int(obs.ObservationNumber)
-            label = str(obs.ROIObservationLabel)
+            try:
+                number = int(obs.ObservationNumber)
+            except Exception:
+                continue
+            label = str(getattr(obs, "ROIObservationLabel", "")).strip()
+            if not label:
+                continue
             names[number] = label
 
         # Fallback: some RTSTRUCTs only populate StructureSetROISequence
         if not names:
             seq2 = getattr(self.structure, "StructureSetROISequence", [])
             for roi in seq2:
-                number = int(roi.ROINumber)
-                label = str(roi.ROIName)
+                try:
+                    number = int(roi.ROINumber)
+                except Exception:
+                    continue
+                label = str(getattr(roi, "ROIName", "")).strip()
+                if not label:
+                    continue
                 names[number] = label
 
         return names
 
+    def _index_roi_contours(self) -> dict[int, FileDataset]:
+        """
+        Pre-index ROIContourSequence by ReferencedROINumber.
+
+        This is used by _load_single_roi for O(1) lookup.
+        """
+        index: dict[int, FileDataset] = {}
+        seq = getattr(self.structure, "ROIContourSequence", [])
+        for roi in seq:
+            number = getattr(roi, "ReferencedROINumber", None)
+            if number is None:
+                continue
+            try:
+                num_int = int(number)
+            except Exception:
+                continue
+            index[num_int] = roi
+        return index
+
     def _load_single_roi(self, name: str) -> RegionOfInterest:
-        roi_number = None
+        """
+        Load a single ROI by name from the RTSTRUCT.
+
+        Semantics:
+        - Find ROI number from region_names
+        - Find corresponding ROIContourSequence entry
+        - Require ContourSequence to be present
+        - Raise KeyError with informative messages on failure
+        """
+        roi_number: int | None = None
         for number, label in self.region_names.items():
             if label == name:
                 roi_number = number
@@ -200,19 +281,16 @@ class Patient:
         if roi_number is None:
             raise KeyError(f"ROI '{name}' not found in RTROIObservationsSequence.")
 
-        roi_contours = getattr(self.structure, "ROIContourSequence", [])
-        for roi in roi_contours:
-            if int(getattr(roi, "ReferencedROINumber", -1)) != roi_number:
-                continue
+        roi_ds = self._roi_by_number.get(roi_number)
+        if roi_ds is None:
+            raise KeyError(f"ROI '{name}' not found in ROIContourSequence.")
 
-            if not hasattr(roi, "ContourSequence"):
-                raise KeyError(f"ROI '{name}' has no ContourSequence data.")
+        if not hasattr(roi_ds, "ContourSequence"):
+            raise KeyError(f"ROI '{name}' has no ContourSequence data.")
 
-            return RegionOfInterest.from_rt_roi(
-                roi_ds=roi,
-                name=name,
-                bins=4096,
-                ct_index=self.ct_index,
-            )
-
-        raise KeyError(f"ROI '{name}' not found in ROIContourSequence.")
+        return RegionOfInterest.from_rt_roi(
+            roi_ds=roi_ds,
+            name=name,
+            bins=4096,
+            ct_index=self.ct_index,
+        )

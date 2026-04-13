@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pydicom
+import pytest
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 
 from dicom2ply.patient import Patient
@@ -41,7 +42,6 @@ def create_rtstruct(path: Path, roi_name="TestROI", ref_uid=None, with_contours=
     ds = FileDataset(str(path), {}, file_meta=meta, preamble=b"\0" * 128)
     ds.Modality = "RTSTRUCT"
 
-    # ROI Observation
     obs = Dataset()
     obs.ROIObservationLabel = roi_name
     obs.ObservationNumber = 1
@@ -52,8 +52,13 @@ def create_rtstruct(path: Path, roi_name="TestROI", ref_uid=None, with_contours=
         roi.ReferencedROINumber = 1
 
         contour = Dataset()
-        contour.ContourImageSequence = [Dataset()]
-        contour.ContourImageSequence[0].ReferencedSOPInstanceUID = ref_uid or "1.2.3"
+        contour.ContourGeometricType = "POINT"
+        contour.NumberOfContourPoints = 1
+        contour.ContourData = [0.0, 0.0, 0.0]
+
+        img_ref = Dataset()
+        img_ref.ReferencedSOPInstanceUID = ref_uid or "1.2.3"
+        contour.ContourImageSequence = [img_ref]
 
         roi.ContourSequence = [contour]
         ds.ROIContourSequence = [roi]
@@ -165,3 +170,164 @@ def test_patient_dump_ply_invokes_writer(
     p.dump_ply(directory=str(tmp_path))
 
     assert calls == ["TestROI"]
+
+
+def test_patient_uses_structuresetroi_when_observations_missing(tmp_path, synthetic_ct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+
+    shutil.copy(synthetic_ct, dicom_dir / "CT1.dcm")
+    ct_ds = pydicom.dcmread(dicom_dir / "CT1.dcm")
+
+    path = dicom_dir / "RS1.dcm"
+    meta = FileMetaDataset()
+    meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+
+    ds = FileDataset(str(path), {}, file_meta=meta, preamble=b"\0" * 128)
+    ds.Modality = "RTSTRUCT"
+
+    roi = Dataset()
+    roi.ROINumber = 7
+    roi.ROIName = "FallbackROI"
+    ds.StructureSetROISequence = [roi]
+
+    contour = Dataset()
+    contour.ContourGeometricType = "POINT"
+    contour.NumberOfContourPoints = 1
+    contour.ContourData = [0.0, 0.0, 0.0]
+
+    img_ref = Dataset()
+    img_ref.ReferencedSOPInstanceUID = ct_ds.SOPInstanceUID
+    contour.ContourImageSequence = [img_ref]
+
+    roi_contour = Dataset()
+    roi_contour.ReferencedROINumber = 7
+    roi_contour.ContourSequence = [contour]
+    ds.ROIContourSequence = [roi_contour]
+
+    ds.save_as(path)
+
+    p = Patient(str(dicom_dir), debug=False)
+
+    assert "FallbackROI" in p.roi_names
+    assert "FallbackROI" in p.regions
+
+
+def test_patient_skips_ct_without_sop_uid(tmp_path):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+
+    ct_path = dicom_dir / "CT_missing_uid.dcm"
+    ds = create_ct_slice(ct_path, z=0)
+    del ds.SOPInstanceUID
+    ds.save_as(ct_path)
+
+    create_rtstruct(dicom_dir / "RS1.dcm", ref_uid="1.2.3")
+
+    p = Patient(str(dicom_dir), debug=False)
+
+    assert p.ct_slices == {}
+
+
+def test_patient_ct_missing_ipp_falls_back_to_instance_number(tmp_path):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+
+    ct_path = dicom_dir / "CT1.dcm"
+    ds = create_ct_slice(ct_path, z=0)
+    del ds.ImagePositionPatient
+    ds.InstanceNumber = 42
+    ds.save_as(ct_path)
+
+    create_rtstruct(dicom_dir / "RS1.dcm", ref_uid=ds.SOPInstanceUID)
+
+    p = Patient(str(dicom_dir), debug=False)
+
+    slice_obj = next(iter(p._ct_slices.values()))
+    assert slice_obj.z == 42.0
+
+
+def test_patient_roi_missing_contoursequence_skipped_in_regions(tmp_path, synthetic_ct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+
+    shutil.copy(synthetic_ct, dicom_dir / "CT1.dcm")
+
+    path = dicom_dir / "RS1.dcm"
+    ds = create_rtstruct(path, roi_name="BadROI", with_contours=False)
+
+    roi = Dataset()
+    roi.ReferencedROINumber = 1
+    ds.ROIContourSequence = [roi]
+    ds.save_as(path)
+
+    p = Patient(str(dicom_dir), debug=False)
+
+    assert p.regions == {}
+    with pytest.raises(KeyError):
+        p.get_roi("BadROI")
+
+
+def test_patient_mixed_valid_and_invalid_rois(tmp_path, synthetic_ct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+
+    shutil.copy(synthetic_ct, dicom_dir / "CT1.dcm")
+    ct_ds = pydicom.dcmread(dicom_dir / "CT1.dcm")
+
+    path = dicom_dir / "RS1.dcm"
+    ds = create_rtstruct(
+        path,
+        roi_name="ValidROI",
+        ref_uid=ct_ds.SOPInstanceUID,
+        with_contours=True,
+    )
+
+    obs2 = Dataset()
+    obs2.ROIObservationLabel = "EmptyROI"
+    obs2.ObservationNumber = 2
+    ds.RTROIObservationsSequence.append(obs2)
+
+    roi2 = Dataset()
+    roi2.ReferencedROINumber = 2
+    ds.ROIContourSequence.append(roi2)
+
+    ds.save_as(path)
+
+    p = Patient(str(dicom_dir), debug=False)
+
+    assert "ValidROI" in p.regions
+    assert "EmptyROI" not in p.regions
+
+
+def test_patient_duplicate_roi_numbers_last_wins(tmp_path, synthetic_ct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+
+    shutil.copy(synthetic_ct, dicom_dir / "CT1.dcm")
+    ct_ds = pydicom.dcmread(dicom_dir / "CT1.dcm")
+
+    path = dicom_dir / "RS1.dcm"
+    ds = create_rtstruct(
+        path,
+        roi_name="FirstROI",
+        ref_uid=ct_ds.SOPInstanceUID,
+        with_contours=True,
+    )
+
+    obs2 = Dataset()
+    obs2.ROIObservationLabel = "SecondROI"
+    obs2.ObservationNumber = 1
+    ds.RTROIObservationsSequence.append(obs2)
+
+    roi2 = Dataset()
+    roi2.ReferencedROINumber = 1
+    roi2.ContourSequence = ds.ROIContourSequence[0].ContourSequence
+    ds.ROIContourSequence.append(roi2)
+
+    ds.save_as(path)
+
+    p = Patient(str(dicom_dir), debug=False)
+
+    assert p.roi_names == ["SecondROI"]
+    assert "SecondROI" in p.regions
