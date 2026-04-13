@@ -74,6 +74,9 @@ class Patient:
         if names is None:
             names = list(self.regions.keys())
 
+        if not names:
+            raise ValueError("No ROIs found in RTSTRUCT")
+
         from dicom2ply.ply_writer import write_roi_ply
 
         for name in names:
