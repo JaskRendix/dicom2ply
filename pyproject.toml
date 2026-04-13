@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dicom2ply"
+version = "0.1.0"
+description = "Convert DICOM-RT structures to PLY point clouds"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+
+authors = [
+  { name = "Christopher M Poole" },
+  { name = "Giorgio" }
+]
+
+dependencies = [
+  "pydicom>=2.4",
+  "numpy>=1.26",
+  "pillow>=10.0",
+  "scikit-image>=0.24",
+  "plyfile>=1.0",
+]
+
+[project.scripts]
+dicom2ply = "dicom2ply.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
