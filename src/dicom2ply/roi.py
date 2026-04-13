@@ -34,11 +34,18 @@ class RegionOfInterest:
         """
         cache = CTSliceCache(ct_index)
 
-        contours = []
-        for contour_ds in roi_ds.ContourSequence:
+        seq = getattr(roi_ds, "ContourSequence", None)
+        if not seq:
+            return cls(name=name, contours=[], bins=bins)
+
+        contours: list[Contour] = []
+        for contour_ds in seq:
             c = Contour.from_rt(contour_ds, bins=bins, cache=cache)
             if c.stats.mean is not None:  # skip empty masks
                 contours.append(c)
+
+        # Sort contours deterministically by slice position
+        contours.sort(key=lambda c: c.slice_pos)
 
         obj = cls(name=name, contours=contours, bins=bins)
         obj.compute_stats()
@@ -48,13 +55,16 @@ class RegionOfInterest:
 
     def compute_stats(self):
         if not self.contours:
+            self.count = 0
             return
 
         values = np.concatenate([c.masked_values for c in self.contours])
-        hist = np.histogram(values, bins=self.bins)
+        counts, edges = np.histogram(values, bins=self.bins)
 
-        self.histogram = hist
-        self.mode = float(hist[1][np.argmax(hist[0])])
+        centers = (edges[:-1] + edges[1:]) / 2
+
+        self.histogram = (counts, edges)
+        self.mode = float(centers[np.argmax(counts)])
         self.mean = float(values.mean())
         self.std = float(values.std())
         self.median = float(np.median(values))
@@ -82,7 +92,10 @@ class RegionOfInterest:
         if not self.contours:
             return
 
-        rows, cols = self.contours[0].ds.pixel_array.shape
+        # Avoid pixel_array decode: use metadata
+        ds0 = self.contours[0].ds
+        rows = int(ds0.Rows)
+        cols = int(ds0.Columns)
 
         positions = np.array([c.slice_pos for c in self.contours])
         uniq = np.unique(positions)
@@ -94,6 +107,10 @@ class RegionOfInterest:
 
         for c in self.contours:
             idx = pos_to_idx[c.slice_pos]
+
+            if c.mask.shape != (rows, cols):
+                continue
+
             volume[..., idx] |= c.mask
 
         self.mask_stack = volume
