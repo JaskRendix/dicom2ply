@@ -302,3 +302,35 @@ def test_roi_get_voxel_coordinates(synthetic_ct, synthetic_rtstruct):
     assert coords.ndim == 2
     assert coords.shape[1] == 3
     assert coords.shape[0] > 0
+
+
+def test_roi_export_mesh_stl(tmp_path, synthetic_ct, synthetic_rtstruct):
+    ct_ds = pydicom.dcmread(synthetic_ct)
+    rt = pydicom.dcmread(synthetic_rtstruct)
+
+    roi = RegionOfInterest.from_rt_roi(
+        roi_ds=rt.ROIContourSequence[0],
+        name="TestROI",
+        bins=16,
+        ct_index={ct_ds.SOPInstanceUID: synthetic_ct},
+    )
+
+    out = tmp_path / "mesh.stl"
+    roi.export_mesh_stl(out)
+    assert out.exists()
+
+
+def test_roi_export_mesh_obj(tmp_path, synthetic_ct, synthetic_rtstruct):
+    ct_ds = pydicom.dcmread(synthetic_ct)
+    rt = pydicom.dcmread(synthetic_rtstruct)
+
+    roi = RegionOfInterest.from_rt_roi(
+        roi_ds=rt.ROIContourSequence[0],
+        name="TestROI",
+        bins=16,
+        ct_index={ct_ds.SOPInstanceUID: synthetic_ct},
+    )
+
+    out = tmp_path / "mesh.obj"
+    roi.export_mesh_obj(out)
+    assert out.exists()

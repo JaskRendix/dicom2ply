@@ -281,7 +281,6 @@ class RegionOfInterest:
             print("Slice index out of range.")
             return
 
-        # FIX: binarize before scaling to avoid int8 overflow
         mask = (self.mask_stack[..., slice_index] > 0).astype(np.uint8)
         img = mask * 255
 
@@ -305,7 +304,6 @@ class RegionOfInterest:
         out.mkdir(parents=True, exist_ok=True)
 
         for i in range(self.mask_stack.shape[2]):
-            # FIX: binarize before scaling
             mask = (self.mask_stack[..., i] > 0).astype(np.uint8)
             img = mask * 255
 
@@ -441,3 +439,87 @@ class RegionOfInterest:
         )
 
         return coords
+
+    def export_mesh_stl(self, output_path: str | Path) -> None:
+        """
+        Export a surface mesh (marching cubes) of the ROI mask as a binary STL file.
+        """
+        try:
+            from skimage import measure
+        except ImportError:
+            print("Cannot export STL: skimage not installed.")
+            return
+
+        if self.mask_stack is None:
+            print("No mask stack available.")
+            return
+
+        vol = np.swapaxes(self.mask_stack, 0, 2)
+
+        if vol.shape[0] < 2 or vol.shape[1] < 2 or vol.shape[2] < 2:
+            print("Cannot export STL: volume too small for marching cubes.")
+            # Write an empty STL file for consistency
+            with open(output_path, "wb") as f:
+                f.write(b"dicom2ply STL export".ljust(80, b" "))
+                f.write((0).to_bytes(4, byteorder="little", signed=False))
+            return
+
+        verts, faces, _, _ = measure.marching_cubes(vol, level=0.5)
+
+        # Binary STL: 80‑byte header, uint32 triangle count, then triangles
+        with open(output_path, "wb") as f:
+            f.write(b"dicom2ply STL export".ljust(80, b" "))
+            f.write(len(faces).to_bytes(4, byteorder="little", signed=False))
+
+            for tri in faces:
+                v0, v1, v2 = verts[tri]
+
+                # Compute normal
+                n = np.cross(v1 - v0, v2 - v0)
+                norm = np.linalg.norm(n)
+                if norm > 0:
+                    n /= norm
+                else:
+                    n = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+                f.write(np.asarray(n, dtype=np.float32).tobytes())
+                f.write(np.asarray(v0, dtype=np.float32).tobytes())
+                f.write(np.asarray(v1, dtype=np.float32).tobytes())
+                f.write(np.asarray(v2, dtype=np.float32).tobytes())
+                f.write((0).to_bytes(2, byteorder="little", signed=False))
+
+    def export_mesh_obj(self, output_path: str | Path) -> None:
+        """
+        Export a surface mesh (marching cubes) of the ROI mask as a Wavefront OBJ file.
+        """
+        try:
+            from skimage import measure
+        except ImportError:
+            print("Cannot export OBJ: skimage not installed.")
+            return
+
+        if self.mask_stack is None:
+            print("No mask stack available.")
+            return
+
+        vol = np.swapaxes(self.mask_stack, 0, 2)
+
+        if vol.shape[0] < 2 or vol.shape[1] < 2 or vol.shape[2] < 2:
+            print("Cannot export OBJ: volume too small for marching cubes.")
+            # Write an empty OBJ file for consistency
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("# dicom2ply OBJ export (empty mesh)\n")
+            return
+
+        verts, faces, _, _ = measure.marching_cubes(vol, level=0.5)
+
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write("# dicom2ply OBJ export\n")
+
+            for v in verts:
+                f.write(f"v {v[0]} {v[1]} {v[2]}\n")
+
+            # OBJ is 1‑indexed
+            for tri in faces:
+                i, j, k = tri + 1
+                f.write(f"f {i} {j} {k}\n")

@@ -397,3 +397,49 @@ def test_cli_coords_export(tmp_path, synthetic_ct, synthetic_rtstruct):
 
     assert result.returncode == 0
     assert list(output.glob("*_coords.npy"))
+
+
+def test_cli_stl_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    output = tmp_path / "out"
+    output.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(output), "--stl"],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr)
+
+    assert result.returncode == 0
+    assert list(output.glob("*_mesh.stl"))
+
+
+def test_cli_obj_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    output = tmp_path / "out"
+    output.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(output), "--obj"],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        print(result.stdout)
+        print(result.stderr)
+
+    assert result.returncode == 0
+    assert list(output.glob("*_mesh.obj"))

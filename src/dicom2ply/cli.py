@@ -37,6 +37,12 @@ def parse_args() -> argparse.Namespace:
         "--mesh", action="store_true", help="Export marching-cubes mesh as PLY"
     )
     parser.add_argument(
+        "--stl", action="store_true", help="Export marching-cubes mesh as STL"
+    )
+    parser.add_argument(
+        "--obj", action="store_true", help="Export marching-cubes mesh as OBJ"
+    )
+    parser.add_argument(
         "--coords", action="store_true", help="Export voxel coordinates as .npy"
     )
 
@@ -108,6 +114,12 @@ def run_conversion(
 
         if args.mesh:
             roi.export_mesh_ply(output_dir / f"{name}_mesh.ply")
+
+        if args.stl:
+            roi.export_mesh_stl(output_dir / f"{name}_mesh.stl")
+
+        if args.obj:
+            roi.export_mesh_obj(output_dir / f"{name}_mesh.obj")
 
         if args.coords:
             coords = roi.get_voxel_coordinates()
