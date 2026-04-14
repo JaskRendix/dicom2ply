@@ -202,3 +202,103 @@ def test_histogram_bins(synthetic_ct, synthetic_rtstruct):
     hist, edges = roi.histogram
     assert len(hist) == 32
     assert len(edges) == 33
+
+
+def test_roi_export_json(tmp_path, synthetic_ct, synthetic_rtstruct):
+    ct_ds = pydicom.dcmread(synthetic_ct)
+    rt = pydicom.dcmread(synthetic_rtstruct)
+
+    roi = RegionOfInterest.from_rt_roi(
+        roi_ds=rt.ROIContourSequence[0],
+        name="TestROI",
+        bins=16,
+        ct_index={ct_ds.SOPInstanceUID: synthetic_ct},
+    )
+
+    data = roi.export_json()
+    assert isinstance(data, dict)
+    assert data["name"] == "TestROI"
+    assert "stats" in data
+    assert "volume" in data
+
+
+def test_roi_export_mask_slice_png(tmp_path, synthetic_ct, synthetic_rtstruct):
+    ct_ds = pydicom.dcmread(synthetic_ct)
+    rt = pydicom.dcmread(synthetic_rtstruct)
+
+    roi = RegionOfInterest.from_rt_roi(
+        roi_ds=rt.ROIContourSequence[0],
+        name="TestROI",
+        bins=16,
+        ct_index={ct_ds.SOPInstanceUID: synthetic_ct},
+    )
+
+    out = tmp_path / "slice.png"
+    roi.export_mask_slice_png(0, out)
+    assert out.exists()
+
+
+def test_roi_export_all_slices_png(tmp_path, synthetic_ct, synthetic_rtstruct):
+    ct_ds = pydicom.dcmread(synthetic_ct)
+    rt = pydicom.dcmread(synthetic_rtstruct)
+
+    roi = RegionOfInterest.from_rt_roi(
+        roi_ds=rt.ROIContourSequence[0],
+        name="TestROI",
+        bins=16,
+        ct_index={ct_ds.SOPInstanceUID: synthetic_ct},
+    )
+
+    out = tmp_path / "slices"
+    roi.export_all_slices_png(out)
+    assert out.exists()
+    assert list(out.glob("*.png"))
+
+
+def test_roi_export_mesh_ply(tmp_path, synthetic_ct, synthetic_rtstruct):
+    ct_ds = pydicom.dcmread(synthetic_ct)
+    rt = pydicom.dcmread(synthetic_rtstruct)
+
+    roi = RegionOfInterest.from_rt_roi(
+        roi_ds=rt.ROIContourSequence[0],
+        name="TestROI",
+        bins=16,
+        ct_index={ct_ds.SOPInstanceUID: synthetic_ct},
+    )
+
+    out = tmp_path / "mesh.ply"
+    roi.export_mesh_ply(out)
+    assert out.exists()
+
+
+def test_roi_export_mask_nifti_float(tmp_path, synthetic_ct, synthetic_rtstruct):
+    ct_ds = pydicom.dcmread(synthetic_ct)
+    rt = pydicom.dcmread(synthetic_rtstruct)
+
+    roi = RegionOfInterest.from_rt_roi(
+        roi_ds=rt.ROIContourSequence[0],
+        name="TestROI",
+        bins=16,
+        ct_index={ct_ds.SOPInstanceUID: synthetic_ct},
+    )
+
+    out = tmp_path / "mask_float.nii.gz"
+    roi.export_mask_nifti_float(out)
+    assert out.exists()
+
+
+def test_roi_get_voxel_coordinates(synthetic_ct, synthetic_rtstruct):
+    ct_ds = pydicom.dcmread(synthetic_ct)
+    rt = pydicom.dcmread(synthetic_rtstruct)
+
+    roi = RegionOfInterest.from_rt_roi(
+        roi_ds=rt.ROIContourSequence[0],
+        name="TestROI",
+        bins=16,
+        ct_index={ct_ds.SOPInstanceUID: synthetic_ct},
+    )
+
+    coords = roi.get_voxel_coordinates()
+    assert coords.ndim == 2
+    assert coords.shape[1] == 3
+    assert coords.shape[0] > 0

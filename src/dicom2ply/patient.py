@@ -58,10 +58,6 @@ class Patient:
         # Lazy cache of ROI name -> RegionOfInterest
         self._roi_cache: dict[str, RegionOfInterest] = {}
 
-    # -------------------------------------------------------------------------
-    # Public API
-    # -------------------------------------------------------------------------
-
     @property
     def roi_names(self) -> list[str]:
         """List of ROI names available in the RTSTRUCT (for CLI validation)."""
@@ -129,8 +125,9 @@ class Patient:
         self,
         directory: str | Path = ".",
         names: Iterable[str] | None = None,
+        export_nifti: bool = False,
     ) -> None:
-        """Export selected ROIs to PLY files."""
+        """Export selected ROIs to PLY files, with optional NIfTI export."""
         from dicom2ply.ply_writer import write_roi_ply
 
         if names is None:
@@ -140,17 +137,19 @@ class Patient:
         if not selected:
             raise ValueError("No ROIs found in RTSTRUCT or no names provided.")
 
+        output_dir = Path(directory)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         for name in selected:
             try:
                 roi = self.get_roi(name)
             except KeyError as e:
                 raise ValueError(f"Cannot export ROI '{name}': {e}") from e
 
-            write_roi_ply(roi, directory)
+            write_roi_ply(roi, output_dir)
 
-    # -------------------------------------------------------------------------
-    # Internal helpers: DICOM loading and indexing
-    # -------------------------------------------------------------------------
+            if export_nifti:
+                roi.export_nifti(output_dir / f"{name}.nii.gz")
 
     def _read_all_datasets(self) -> dict[Path, FileDataset]:
         """

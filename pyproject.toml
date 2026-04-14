@@ -23,6 +23,10 @@ dependencies = [
   "plyfile>=1.0",
 ]
 
+[project.optional-dependencies]
+nifti = ["nibabel>=5.2"]
+test = ["pytest>=8.0", "pytest-cov>=4.1"]
+
 [project.scripts]
 dicom2ply = "dicom2ply.cli:main"
 

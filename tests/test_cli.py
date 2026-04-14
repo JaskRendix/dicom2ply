@@ -300,3 +300,100 @@ def test_cli_multiple_ct_slices(tmp_path, synthetic_rtstruct):
 
     assert result.returncode == 0
     assert list(output.glob("*.ply"))
+
+
+def test_cli_json_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    output = tmp_path / "out"
+    output.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(output), "--json"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert list(output.glob("*.json"))
+
+
+def test_cli_float_nifti_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    output = tmp_path / "out"
+    output.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(output), "--float-nifti"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert list(output.glob("*_float.nii.gz"))
+
+
+def test_cli_png_slices_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    output = tmp_path / "out"
+    output.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(output), "--png-slices"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    slice_dirs = list(output.glob("*_slices"))
+    assert slice_dirs
+    assert list(slice_dirs[0].glob("*.png"))
+
+
+def test_cli_mesh_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    output = tmp_path / "out"
+    output.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(output), "--mesh"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert list(output.glob("*_mesh.ply"))
+
+
+def test_cli_coords_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    output = tmp_path / "out"
+    output.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(output), "--coords"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert list(output.glob("*_coords.npy"))
