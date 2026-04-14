@@ -13,9 +13,16 @@ This project is a modern, modular rewrite of the original implementation by Chri
 - Extracts ROI contours from DICOM RTSTRUCT files  
 - Reconstructs 3D coordinates using CT slice metadata  
 - Outputs one binary PLY file per ROI  
-- Optional ROI filtering via `--names` or `names=[...]`  
+- Optional ROI filtering via `--names`  
+- Additional ROI exports:  
+  - Binary mask NIfTI (`--nifti`)  
+  - Float32 mask NIfTI (`--float-nifti`)  
+  - ROI statistics as JSON (`--json`)  
+  - Mask slices as PNG images (`--png-slices`)  
+  - Marching‑cubes mesh as PLY (`--mesh`)  
+  - Voxel coordinates as `.npy` (`--coords`)  
 - Command‑line interface (`dicom2ply`)  
-- Modular architecture (`contour`, `roi`, `geometry`, `ct_cache`, `masking`, `ply_writer`)  
+- Modular architecture (`contour`, `roi`, `ct_cache`, `patient`, `ply_writer`)  
 - Full test suite and GitHub Actions CI  
 - Modern `src/` layout and Python packaging
 
@@ -40,20 +47,48 @@ Requires Python ≥ 3.10.
 ## Command‑Line Usage
 
 ```
-dicom2ply <dicom_dir> <output_dir> [--names ROI1 ROI2 ...]
+dicom2ply <dicom_dir> <output_dir> [options]
 ```
 
-- `dicom_dir` must contain CT slices and one RTSTRUCT file  
-- `output_dir` receives one `roi_<name>.ply` file per ROI  
-- `--names` restricts export to specific ROI names (optional)
+### Required arguments
 
-Example:
+- `dicom_dir` — directory containing CT slices and one RTSTRUCT  
+- `output_dir` — directory where output files are written  
+
+### Optional ROI selection
 
 ```
-dicom2ply ./dicom ./ply --names GTV CTV PTV
+--names ROI1 ROI2 ...
 ```
 
-If any requested ROI name is missing, the tool reports the missing names and lists available ROIs.
+Exports only the listed ROIs.  
+If omitted, all ROIs in the RTSTRUCT are processed.
+
+### Export options
+
+| Flag | Output |
+|------|--------|
+| `--nifti` | Binary mask NIfTI (`<name>.nii.gz`) |
+| `--float-nifti` | Float32 mask NIfTI (`<name>_float.nii.gz`) |
+| `--json` | ROI statistics (`<name>.json`) |
+| `--png-slices` | PNG mask slices (`<name>_slices/…`) |
+| `--mesh` | Marching‑cubes mesh (`<name>_mesh.ply`) |
+| `--coords` | Voxel coordinates (`<name>_coords.npy`) |
+
+### Example
+
+```
+dicom2ply ./dicom ./out \
+    --names GTV CTV \
+    --json --mesh --png-slices
+```
+
+This writes:
+
+- `roi_GTV.ply`, `roi_CTV.ply`  
+- `GTV.json`, `CTV.json`  
+- `GTV_mesh.ply`, `CTV_mesh.ply`  
+- `GTV_slices/…`, `CTV_slices/…`
 
 ---
 
@@ -64,11 +99,19 @@ from dicom2ply.patient import Patient
 
 p = Patient("/path/to/dicom")
 
-# Export all ROIs
-p.dump_ply(directory="/path/to/output")
+# Export PLY only
+p.dump_ply(directory="/path/to/out")
 
-# Export only selected ROIs
-p.dump_ply(directory="/path/to/output", names=["GTV", "PTV"])
+# Export PLY + binary NIfTI
+p.dump_ply(directory="/path/to/out", export_nifti=True)
+
+# Access ROI objects for additional exports
+roi = p.get_roi("GTV")
+roi.export_mask_nifti_float("GTV_float.nii.gz")
+roi.export_all_slices_png("GTV_slices")
+roi.export_mesh_ply("GTV_mesh.ply")
+roi.export_json()
+roi.get_voxel_coordinates()
 ```
 
 ---
@@ -116,7 +159,8 @@ Tests cover:
 - Axial CT slices with consistent spacing  
 - Standard RTSTRUCT contour encoding  
 - No gantry tilt  
-- No interpolation between missing slices  
+- No interpolation between missing slices
+- Mesh export requires at least a 2×2×2 mask volume; thin ROIs produce an empty mesh file.
 
 ---
 
