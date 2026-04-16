@@ -20,6 +20,8 @@ This project is a modern, modular rewrite of the original implementation by Chri
   - ROI statistics as JSON (`--json`)  
   - Mask slices as PNG images (`--png-slices`)  
   - Marching‑cubes mesh as PLY (`--mesh`)  
+  - STL mesh (`--stl`)
+  - OBJ mesh (`--obj`)
   - Voxel coordinates as `.npy` (`--coords`)  
 - Command‑line interface (`dicom2ply`)  
 - Modular architecture (`contour`, `roi`, `ct_cache`, `patient`, `ply_writer`)  
@@ -31,7 +33,7 @@ This project is a modern, modular rewrite of the original implementation by Chri
 ## Installation
 
 ```
-pip install dicom2ply
+pip install dicom2ply # not yet published to PyPI
 ```
 
 Or from source:
@@ -73,6 +75,8 @@ If omitted, all ROIs in the RTSTRUCT are processed.
 | `--json` | ROI statistics (`<name>.json`) |
 | `--png-slices` | PNG mask slices (`<name>_slices/…`) |
 | `--mesh` | Marching‑cubes mesh (`<name>_mesh.ply`) |
+| `--stl` | STL mesh (`<name>_mesh.stl`) |
+| `--obj` | OBJ mesh (`<name>_mesh.obj`) |
 | `--coords` | Voxel coordinates (`<name>_coords.npy`) |
 
 ### Example
