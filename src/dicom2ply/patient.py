@@ -201,6 +201,8 @@ class Patient:
         for path in self._files:
             ds = self._datasets.get(path)
             if ds is None:
+                if self.debug:
+                    print(f"[dicom2ply][DEBUG] No dataset cached for: {path}")
                 continue
 
             if getattr(ds, "Modality", None) != "CT":
@@ -209,10 +211,10 @@ class Patient:
             sop = getattr(ds, "SOPInstanceUID", None)
             if sop is None:
                 if self.debug:
-                    print(f"[dicom2ply] CT slice without SOPInstanceUID: {path}")
+                    print(f"[dicom2ply][DEBUG] CT slice without SOPInstanceUID: {path}")
                 continue
 
-            # Geometry consistency checks (rows/cols, spacing, orientation)
+            # Geometry metadata
             try:
                 r = int(ds.Rows)
                 c = int(ds.Columns)
@@ -221,46 +223,58 @@ class Patient:
                 iop = tuple(float(v) for v in ds.ImageOrientationPatient)
             except Exception:
                 if self.debug:
-                    print(f"[dicom2ply] CT slice missing geometry metadata: {path}")
+                    print(f"[dicom2ply][DEBUG] Missing geometry metadata in: {path}")
                 continue
 
+            # First slice establishes reference geometry
             if rows is None:
                 rows, cols = r, c
                 spacing = (px, py)
                 orientation = (tuple(iop[:3]), tuple(iop[3:]))
+                if self.debug:
+                    print(
+                        f"[dicom2ply][DEBUG] Reference CT geometry: "
+                        f"{rows}x{cols}, spacing={spacing}, orientation={orientation}"
+                    )
             else:
+                # Geometry consistency checks
                 if (r, c) != (rows, cols) and self.debug:
                     print(
-                        f"[dicom2ply] Inconsistent CT dimensions: "
+                        f"[dicom2ply][DEBUG] Inconsistent CT dimensions: "
                         f"{(r, c)} vs {(rows, cols)} in {path}"
                     )
+
                 if spacing is not None and (px, py) != spacing and self.debug:
                     print(
-                        f"[dicom2ply] Inconsistent CT pixel spacing: "
+                        f"[dicom2ply][DEBUG] Inconsistent CT pixel spacing: "
                         f"{(px, py)} vs {spacing} in {path}"
                     )
+
                 if (
                     orientation is not None
                     and (tuple(iop[:3]), tuple(iop[3:])) != orientation
                     and self.debug
                 ):
-                    print(
-                        "[dicom2ply] Inconsistent CT orientation in series "
-                        f"(ImageOrientationPatient) for {path}"
-                    )
+                    print(f"[dicom2ply][DEBUG] Inconsistent CT orientation in: {path}")
 
-            # Robust slice position: use normal·origin when possible
-            z: float
+            # Compute robust slice position
             try:
                 z = slice_position(ds)
             except Exception:
-                # Fallback: InstanceNumber as last resort
                 z = float(getattr(ds, "InstanceNumber", 0))
+                if self.debug:
+                    print(
+                        f"[dicom2ply][DEBUG] Falling back to InstanceNumber for slice: {path}"
+                    )
 
             slices.append(CTSlice(sop_uid=str(sop), path=path, z=z))
 
         # Sort by geometric slice position
         slices.sort(key=lambda s: s.z)
+
+        if self.debug:
+            print(f"[dicom2ply][DEBUG] Indexed {len(slices)} CT slices.")
+
         return {s.sop_uid: s for s in slices}
 
     def _extract_roi_names(self) -> dict[int, str]:

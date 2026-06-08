@@ -45,6 +45,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--coords", action="store_true", help="Export voxel coordinates as .npy"
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose debug output during DICOM parsing",
+    )
 
     return parser.parse_args()
 
@@ -90,7 +95,7 @@ def run_conversion(
     names: Iterable[str] | None,
     args: argparse.Namespace,
 ) -> None:
-    patient = Patient(str(dicom_dir))
+    patient = Patient(str(dicom_dir), debug=args.debug)
     validated = safe_validate_roi_names(patient, names)
 
     patient.dump_ply(
