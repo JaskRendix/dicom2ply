@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -5,6 +6,8 @@ from pydicom.dataset import Dataset
 
 from dicom2ply.geometry import check_planarity, patient_to_pixel, slice_position
 from dicom2ply.masking import polygon_mask
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -50,7 +53,13 @@ class Contour:
         self.ds = ds
 
         points = np.column_stack([self.x, self.y, self.z])
-        check_planarity(points, ds)
+
+        # Non-planar must raise
+        try:
+            check_planarity(points, ds)
+        except Exception as e:
+            logger.error(f"Non-planar contour for UID {self.slice_uid}: {e}")
+            raise
 
         row, col = patient_to_pixel(points, ds)
 
@@ -63,9 +72,17 @@ class Contour:
 
         self.mask = polygon_mask(row, col, (rows, cols))
 
+        # Mask shape mismatch must raise
+        if self.mask.shape != (rows, cols):
+            msg = (
+                f"Mask shape mismatch for UID {self.slice_uid}: "
+                f"expected {(rows, cols)}, got {self.mask.shape}"
+            )
+            logger.error(msg)
+            raise ValueError(msg)
+
         pixel_array = ds.pixel_array.astype(float)
 
-        # HU rescale
         slope = float(getattr(ds, "RescaleSlope", 1.0))
         intercept = float(getattr(ds, "RescaleIntercept", 0.0))
         pixel_array = pixel_array * slope + intercept
@@ -73,14 +90,14 @@ class Contour:
         masked = pixel_array[self.mask.astype(bool)]
         self.masked_values = masked
 
-        # Project contour centroid onto slice normal
         try:
             self.slice_pos = slice_position(ds)
         except Exception:
-            # Fallback: mean z of contour points
             self.slice_pos = float(np.mean(self.z))
 
+        # Empty mask: warn, but DO NOT raise
         if masked.size == 0:
+            logger.warning(f"Empty contour mask for UID {self.slice_uid}")
             return
 
         counts, edges = np.histogram(masked, bins=self.bins)

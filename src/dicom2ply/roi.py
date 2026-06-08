@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,8 @@ from pydicom.dataset import Dataset
 
 from dicom2ply.contour import Contour
 from dicom2ply.ct_cache import CTSliceCache
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -47,8 +50,10 @@ class RegionOfInterest:
         contours: list[Contour] = []
         for contour_ds in seq:
             c = Contour.from_rt(contour_ds, bins=bins, cache=cache)
-            if c.stats.mean is not None:
-                contours.append(c)
+            if c.stats.mean is None:
+                logger.warning(f"Skipping empty contour in ROI '{name}'")
+                continue
+            contours.append(c)
 
         slice_map = {}
         for c in contours:
@@ -56,6 +61,10 @@ class RegionOfInterest:
                 slice_map[c.slice_uid] = c.slice_pos
             else:
                 if abs(slice_map[c.slice_uid] - c.slice_pos) > 1e-3:
+                    logger.error(
+                        f"Inconsistent slice positions for UID {c.slice_uid}: "
+                        f"{slice_map[c.slice_uid]} vs {c.slice_pos}"
+                    )
                     raise ValueError(
                         f"Contours for SOPInstanceUID {c.slice_uid} have inconsistent "
                         f"slice positions: {slice_map[c.slice_uid]} vs {c.slice_pos}"
@@ -159,7 +168,10 @@ class RegionOfInterest:
 
             # Validate mask geometry
             if c.mask is None or c.mask.shape != (rows, cols):
-                # Geometry mismatch → skip
+                logger.error(
+                    f"Mask geometry mismatch in ROI '{self.name}' for slice UID {c.slice_uid}: "
+                    f"expected {(rows, cols)}, got {None if c.mask is None else c.mask.shape}"
+                )
                 continue
 
             volume[..., idx] |= c.mask
@@ -204,6 +216,7 @@ class RegionOfInterest:
         try:
             import nibabel as nib
         except ImportError:
+            logger.error("Cannot build mesh: nibabel not installed.")
             raise RuntimeError("Cannot export NIfTI: nibabel not installed.")
 
         if self.mask_stack is None or not self.contours:
@@ -331,15 +344,17 @@ class RegionOfInterest:
         try:
             import imageio.v2 as imageio
         except ImportError:
-            print("Cannot export PNG: imageio not installed.")
+            logger.error("Cannot export PNG: imageio not installed.")
             return
 
         if self.mask_stack is None:
-            print("No mask stack available.")
+            logger.error(f"No mask stack available for ROI '{self.name}'")
             return
 
         if slice_index < 0 or slice_index >= self.mask_stack.shape[2]:
-            print("Slice index out of range.")
+            logger.error(
+                f"Slice index {slice_index} out of range for ROI '{self.name}'"
+            )
             return
 
         mask = (self.mask_stack[..., slice_index] > 0).astype(np.uint8)
@@ -354,11 +369,11 @@ class RegionOfInterest:
         try:
             import imageio.v2 as imageio
         except ImportError:
-            print("Cannot export PNG: imageio not installed.")
+            logger.error("Cannot export PNG: imageio not installed.")
             return
 
         if self.mask_stack is None:
-            print("No mask stack available.")
+            logger.error(f"No mask stack available for ROI '{self.name}'")
             return
 
         out = Path(directory)
@@ -380,9 +395,13 @@ class RegionOfInterest:
         try:
             from skimage import measure
         except ImportError:
+            logger.error("Cannot build mesh: skimage not installed.")
             raise ImportError("Cannot build mesh: skimage not installed.")
 
         if self.mask_stack is None:
+            logger.error(
+                f"No mask stack available for mesh export of ROI '{self.name}'"
+            )
             raise ValueError("No mask stack available for mesh export.")
 
         # skimage expects (Z, Y, X); we have (rows, cols, slices) = (Y, X, Z)
@@ -390,6 +409,7 @@ class RegionOfInterest:
         vol = np.swapaxes(vol, 1, 2)  # (Z, Y, X)
 
         if vol.shape[0] < 2 or vol.shape[1] < 2 or vol.shape[2] < 2:
+            logger.warning(f"ROI '{self.name}' too small for mesh generation")
             self._mesh_verts = np.zeros((0, 3), dtype=np.float32)
             self._mesh_faces = np.zeros((0, 3), dtype=np.int32)
             return self._mesh_verts, self._mesh_faces

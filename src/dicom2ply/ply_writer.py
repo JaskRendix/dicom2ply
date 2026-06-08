@@ -1,7 +1,10 @@
+import logging
 import os
 
 import numpy as np
 from plyfile import PlyData, PlyElement
+
+logger = logging.getLogger(__name__)
 
 
 def write_roi_ply(roi, directory) -> None:
@@ -19,7 +22,7 @@ def write_roi_ply(roi, directory) -> None:
         points.append(pts)
 
     if not points:
-        print(f" - No points for ROI {roi.name}")
+        logger.warning(f"No points for ROI '{roi.name}', skipping PLY export")
         return
 
     points = np.vstack(points).astype(np.float32)
@@ -35,7 +38,7 @@ def write_roi_ply(roi, directory) -> None:
     vertex_element = PlyElement.describe(vertex_data, "vertex")
 
     # Build PLY object
-    ply = PlyData([vertex_element], text=False)  # binary_little_endian
+    ply = PlyData([vertex_element], text=False)
 
     # Add metadata as comments
     ply.comments.append(f"name roi_{roi.name}")
@@ -49,7 +52,7 @@ def write_roi_ply(roi, directory) -> None:
 
     # Output path
     file_name = os.path.join(directory, f"roi_{roi.name}.ply")
-    print(file_name)
+    logger.info(f"Writing PLY for ROI '{roi.name}' → {file_name}")
 
     # Write file
     ply.write(file_name)

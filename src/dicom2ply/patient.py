@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,8 @@ import pydicom
 from pydicom.dataset import FileDataset
 
 from dicom2ply.roi import RegionOfInterest
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,12 @@ class Patient:
         reader: Callable[..., FileDataset] = pydicom.dcmread,
         walker: Callable[[Path], Iterable[Path]] | None = None,
     ) -> None:
+        # Configure logger level based on debug flag
+        if debug:
+            logger.setLevel(logging.DEBUG)
+        else:
+            logger.setLevel(logging.INFO)
+
         self.debug = debug
         self.dicom_dir = Path(dicom_dir)
         self._reader = reader
@@ -33,6 +42,7 @@ class Patient:
 
         # All files in the directory (tests expect this attribute name)
         self._files: list[Path] = list(self._walker(self.dicom_dir))
+        logger.debug(f"Found {len(self._files)} files in {self.dicom_dir}")
 
         # Single-pass read cache: Path -> FileDataset
         self._datasets: dict[Path, FileDataset] = self._read_all_datasets()
@@ -50,9 +60,9 @@ class Patient:
         self.ct_index: dict[str, str] = dict(self.ct_slices)
 
         # ROI metadata
-        self.region_names: dict[int, str] = self._extract_roi_names()  # legacy name
+        self.region_names: dict[int, str] = self._extract_roi_names()
 
-        # Pre-index ROIContourSequence by ReferencedROINumber for O(1) lookup
+        # Pre-index ROIContourSequence by ReferencedROINumber
         self._roi_by_number: dict[int, FileDataset] = self._index_roi_contours()
 
         # Lazy cache of ROI name -> RegionOfInterest
@@ -60,25 +70,16 @@ class Patient:
 
     @property
     def roi_names(self) -> list[str]:
-        """List of ROI names available in the RTSTRUCT (for CLI validation)."""
         return list(self.region_names.values())
 
     @property
     def regions(self) -> dict[str, RegionOfInterest]:
-        """
-        Backwards-compatible mapping of ROI name -> RegionOfInterest.
-
-        Semantics match the original implementation:
-        - Iterate ROIContourSequence
-        - Skip entries without a known name or without ContourSequence
-        - If ROIContourSequence is empty, return {}
-        - Never raise errors
-        """
         if self._roi_cache:
             return dict(self._roi_cache)
 
         roi_contours = getattr(self.structure, "ROIContourSequence", None)
         if not roi_contours:
+            logger.debug("No ROIContourSequence found in RTSTRUCT")
             return {}
 
         for roi in roi_contours:
@@ -93,10 +94,10 @@ class Patient:
             if not hasattr(roi, "ContourSequence"):
                 continue
 
-            # Avoid recomputing if already cached via get_roi
             if name in self._roi_cache:
                 continue
 
+            logger.debug(f"Loading ROI '{name}'")
             region = RegionOfInterest.from_rt_roi(
                 roi_ds=roi,
                 name=name,
@@ -108,15 +109,13 @@ class Patient:
         return dict(self._roi_cache)
 
     def get_roi(self, name: str) -> RegionOfInterest:
-        """Return a single ROI by name, loading it on demand."""
         if name not in self.roi_names:
             raise KeyError(f"ROI '{name}' not found. Available: {self.roi_names}")
 
-        try:
+        if name in self._roi_cache:
             return self._roi_cache[name]
-        except KeyError:
-            pass
 
+        logger.debug(f"Loading ROI '{name}' on demand")
         roi = self._load_single_roi(name)
         self._roi_cache[name] = roi
         return roi
@@ -127,7 +126,6 @@ class Patient:
         names: Iterable[str] | None = None,
         export_nifti: bool = False,
     ) -> None:
-        """Export selected ROIs to PLY files, with optional NIfTI export."""
         from dicom2ply.ply_writer import write_roi_ply
 
         if names is None:
@@ -141,32 +139,24 @@ class Patient:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         for name in selected:
-            try:
-                roi = self.get_roi(name)
-            except KeyError as e:
-                raise ValueError(f"Cannot export ROI '{name}': {e}") from e
-
+            logger.info(f"Exporting ROI '{name}' to PLY")
+            roi = self.get_roi(name)
             write_roi_ply(roi, output_dir)
 
             if export_nifti:
+                logger.info(f"Exporting NIfTI for ROI '{name}'")
                 roi.export_nifti(output_dir / f"{name}.nii.gz")
 
     def _read_all_datasets(self) -> dict[Path, FileDataset]:
-        """
-        Read all DICOM files once, without pixel data, and cache them.
-
-        This avoids repeated I/O in _load_rtstruct and _index_ct_slices.
-        """
         datasets: dict[Path, FileDataset] = {}
         for path in self._files:
             try:
                 ds = self._reader(path, stop_before_pixels=True)
             except Exception:
-                if self.debug:
-                    # Best-effort debug info; keep behavior silent by default
-                    print(f"[dicom2ply] Skipping unreadable DICOM file: {path}")
+                logger.debug(f"Skipping unreadable DICOM file: {path}")
                 continue
             datasets[path] = ds
+        logger.debug(f"Loaded {len(datasets)} readable DICOM files")
         return datasets
 
     def _load_rtstruct(self) -> FileDataset:
@@ -176,33 +166,24 @@ class Patient:
                 continue
 
             if getattr(ds, "Modality", None) == "RTSTRUCT":
+                logger.debug(f"RTSTRUCT found: {path}")
                 return ds
 
         raise FileNotFoundError("No RTSTRUCT file found (Modality=RTSTRUCT).")
 
     def _index_ct_slices(self) -> dict[str, CTSlice]:
-        """
-        Build a deterministic CT slice index using robust slice position.
-
-        Uses ImageOrientationPatient + ImagePositionPatient via geometry.slice_position
-        when available; falls back to InstanceNumber otherwise.
-        """
         from dicom2ply.geometry import slice_position
 
         slices: list[CTSlice] = []
 
-        rows: int | None = None
-        cols: int | None = None
-        spacing: tuple[float, float] | None = None
-        orientation: (
-            tuple[tuple[float, float, float], tuple[float, float, float]] | None
-        ) = None
+        rows = cols = None
+        spacing = None
+        orientation = None
 
         for path in self._files:
             ds = self._datasets.get(path)
             if ds is None:
-                if self.debug:
-                    print(f"[dicom2ply][DEBUG] No dataset cached for: {path}")
+                logger.debug(f"No dataset cached for: {path}")
                 continue
 
             if getattr(ds, "Modality", None) != "CT":
@@ -210,11 +191,9 @@ class Patient:
 
             sop = getattr(ds, "SOPInstanceUID", None)
             if sop is None:
-                if self.debug:
-                    print(f"[dicom2ply][DEBUG] CT slice without SOPInstanceUID: {path}")
+                logger.debug(f"CT slice without SOPInstanceUID: {path}")
                 continue
 
-            # Geometry metadata
             try:
                 r = int(ds.Rows)
                 c = int(ds.Columns)
@@ -222,68 +201,42 @@ class Patient:
                 py = float(ds.PixelSpacing[1])
                 iop = tuple(float(v) for v in ds.ImageOrientationPatient)
             except Exception:
-                if self.debug:
-                    print(f"[dicom2ply][DEBUG] Missing geometry metadata in: {path}")
+                logger.debug(f"Missing geometry metadata in: {path}")
                 continue
 
-            # First slice establishes reference geometry
             if rows is None:
                 rows, cols = r, c
                 spacing = (px, py)
                 orientation = (tuple(iop[:3]), tuple(iop[3:]))
-                if self.debug:
-                    print(
-                        f"[dicom2ply][DEBUG] Reference CT geometry: "
-                        f"{rows}x{cols}, spacing={spacing}, orientation={orientation}"
-                    )
+                logger.debug(
+                    f"Reference CT geometry: {rows}x{cols}, spacing={spacing}, orientation={orientation}"
+                )
             else:
-                # Geometry consistency checks
-                if (r, c) != (rows, cols) and self.debug:
-                    print(
-                        f"[dicom2ply][DEBUG] Inconsistent CT dimensions: "
-                        f"{(r, c)} vs {(rows, cols)} in {path}"
+                if (r, c) != (rows, cols):
+                    logger.debug(
+                        f"Inconsistent CT dimensions: {(r, c)} vs {(rows, cols)} in {path}"
                     )
-
-                if spacing is not None and (px, py) != spacing and self.debug:
-                    print(
-                        f"[dicom2ply][DEBUG] Inconsistent CT pixel spacing: "
-                        f"{(px, py)} vs {spacing} in {path}"
+                if spacing and (px, py) != spacing:
+                    logger.debug(
+                        f"Inconsistent CT pixel spacing: {(px, py)} vs {spacing} in {path}"
                     )
+                if orientation and (tuple(iop[:3]), tuple(iop[3:])) != orientation:
+                    logger.debug(f"Inconsistent CT orientation in: {path}")
 
-                if (
-                    orientation is not None
-                    and (tuple(iop[:3]), tuple(iop[3:])) != orientation
-                    and self.debug
-                ):
-                    print(f"[dicom2ply][DEBUG] Inconsistent CT orientation in: {path}")
-
-            # Compute robust slice position
             try:
                 z = slice_position(ds)
             except Exception:
                 z = float(getattr(ds, "InstanceNumber", 0))
-                if self.debug:
-                    print(
-                        f"[dicom2ply][DEBUG] Falling back to InstanceNumber for slice: {path}"
-                    )
+                logger.debug(f"Falling back to InstanceNumber for slice: {path}")
 
             slices.append(CTSlice(sop_uid=str(sop), path=path, z=z))
 
-        # Sort by geometric slice position
         slices.sort(key=lambda s: s.z)
-
-        if self.debug:
-            print(f"[dicom2ply][DEBUG] Indexed {len(slices)} CT slices.")
+        logger.debug(f"Indexed {len(slices)} CT slices")
 
         return {s.sop_uid: s for s in slices}
 
     def _extract_roi_names(self) -> dict[int, str]:
-        """
-        Build a mapping ObservationNumber/ROINumber -> ROI name.
-
-        Primary source: RTROIObservationsSequence (ROIObservationLabel).
-        Fallback: StructureSetROISequence (ROIName).
-        """
         names: dict[int, str] = {}
 
         seq = getattr(self.structure, "RTROIObservationsSequence", [])
@@ -293,11 +246,9 @@ class Patient:
             except Exception:
                 continue
             label = str(getattr(obs, "ROIObservationLabel", "")).strip()
-            if not label:
-                continue
-            names[number] = label
+            if label:
+                names[number] = label
 
-        # Fallback: some RTSTRUCTs only populate StructureSetROISequence
         if not names:
             seq2 = getattr(self.structure, "StructureSetROISequence", [])
             for roi in seq2:
@@ -306,18 +257,13 @@ class Patient:
                 except Exception:
                     continue
                 label = str(getattr(roi, "ROIName", "")).strip()
-                if not label:
-                    continue
-                names[number] = label
+                if label:
+                    names[number] = label
 
+        logger.debug(f"Extracted ROI names: {names}")
         return names
 
     def _index_roi_contours(self) -> dict[int, FileDataset]:
-        """
-        Pre-index ROIContourSequence by ReferencedROINumber.
-
-        This is used by _load_single_roi for O(1) lookup.
-        """
         index: dict[int, FileDataset] = {}
         seq = getattr(self.structure, "ROIContourSequence", [])
         for roi in seq:
@@ -329,19 +275,12 @@ class Patient:
             except Exception:
                 continue
             index[num_int] = roi
+
+        logger.debug(f"Indexed {len(index)} ROIContourSequence entries")
         return index
 
     def _load_single_roi(self, name: str) -> RegionOfInterest:
-        """
-        Load a single ROI by name from the RTSTRUCT.
-
-        Semantics:
-        - Find ROI number from region_names
-        - Find corresponding ROIContourSequence entry
-        - Require ContourSequence to be present
-        - Raise KeyError with informative messages on failure
-        """
-        roi_number: int | None = None
+        roi_number = None
         for number, label in self.region_names.items():
             if label == name:
                 roi_number = number
@@ -357,6 +296,7 @@ class Patient:
         if not hasattr(roi_ds, "ContourSequence"):
             raise KeyError(f"ROI '{name}' has no ContourSequence data.")
 
+        logger.debug(f"Loading ROI '{name}' from RTSTRUCT")
         return RegionOfInterest.from_rt_roi(
             roi_ds=roi_ds,
             name=name,

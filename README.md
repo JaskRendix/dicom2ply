@@ -19,11 +19,11 @@ This project is a modern, modular rewrite of the original implementation by Chri
   - Float32 mask NIfTI (`--float-nifti`)  
   - ROI statistics as JSON (`--json`)  
   - Mask slices as PNG images (`--png-slices`)  
-  - Marching‑cubes mesh as PLY (`--mesh`)  
+  - Marching-cubes mesh as PLY (`--mesh`)  
   - STL mesh (`--stl`)
   - OBJ mesh (`--obj`)
   - Voxel coordinates as `.npy` (`--coords`)  
-- Command‑line interface (`dicom2ply`)  
+- Command-line interface (`dicom2ply`)  
 - Modular architecture (`contour`, `roi`, `ct_cache`, `patient`, `ply_writer`)  
 - Full test suite and GitHub Actions CI  
 - Modern `src/` layout and Python packaging
@@ -46,7 +46,7 @@ Requires Python ≥ 3.10.
 
 ---
 
-## Command‑Line Usage
+## Command-Line Usage
 
 ```
 dicom2ply <dicom_dir> <output_dir> [options]
@@ -74,7 +74,7 @@ If omitted, all ROIs in the RTSTRUCT are processed.
 | `--float-nifti` | Float32 mask NIfTI (`<name>_float.nii.gz`) |
 | `--json` | ROI statistics (`<name>.json`) |
 | `--png-slices` | PNG mask slices (`<name>_slices/…`) |
-| `--mesh` | Marching‑cubes mesh (`<name>_mesh.ply`) |
+| `--mesh` | Marching-cubes mesh (`<name>_mesh.ply`) |
 | `--stl` | STL mesh (`<name>_mesh.stl`) |
 | `--obj` | OBJ mesh (`<name>_mesh.obj`) |
 | `--coords` | Voxel coordinates (`<name>_coords.npy`) |

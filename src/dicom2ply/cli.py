@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from collections.abc import Iterable
 from pathlib import Path
 
 from dicom2ply.patient import Patient
+
+logger = logging.getLogger("dicom2ply.cli")
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,7 +25,7 @@ def parse_args() -> argparse.Namespace:
         help="Optional list of ROI names to export",
     )
 
-    # New export options
+    # Export options
     parser.add_argument("--nifti", action="store_true", help="Export binary mask NIfTI")
     parser.add_argument(
         "--float-nifti", action="store_true", help="Export float32 mask NIfTI"
@@ -45,6 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--coords", action="store_true", help="Export voxel coordinates as .npy"
     )
+
+    # Debug flag
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -52,6 +57,18 @@ def parse_args() -> argparse.Namespace:
     )
 
     return parser.parse_args()
+
+
+def configure_logging(debug: bool) -> None:
+    """Configure global logging based on --debug flag."""
+    level = logging.DEBUG if debug else logging.INFO
+
+    logging.basicConfig(
+        level=level,
+        format="%(levelname)s: %(message)s",
+    )
+
+    logging.addLevelName(logging.ERROR, "Error")
 
 
 def validate_paths(dicom_dir: Path, output_dir: Path) -> None:
@@ -98,6 +115,7 @@ def run_conversion(
     patient = Patient(str(dicom_dir), debug=args.debug)
     validated = safe_validate_roi_names(patient, names)
 
+    logger.info("Exporting PLY files...")
     patient.dump_ply(
         directory=str(output_dir), names=validated, export_nifti=args.nifti
     )
@@ -106,27 +124,34 @@ def run_conversion(
         roi = patient.get_roi(name)
 
         if args.float_nifti:
+            logger.info(f"Exporting float NIfTI for ROI '{name}'")
             roi.export_mask_nifti_float(output_dir / f"{name}_float.nii.gz")
 
         if args.json:
+            logger.info(f"Exporting JSON stats for ROI '{name}'")
             import json
 
             with open(output_dir / f"{name}.json", "w") as f:
                 json.dump(roi.export_json(), f, indent=2)
 
         if args.png_slices:
+            logger.info(f"Exporting PNG slices for ROI '{name}'")
             roi.export_all_slices_png(output_dir / f"{name}_slices")
 
         if args.mesh:
+            logger.info(f"Exporting PLY mesh for ROI '{name}'")
             roi.export_mesh_ply(output_dir / f"{name}_mesh.ply")
 
         if args.stl:
+            logger.info(f"Exporting STL mesh for ROI '{name}'")
             roi.export_mesh_stl(output_dir / f"{name}_mesh.stl")
 
         if args.obj:
+            logger.info(f"Exporting OBJ mesh for ROI '{name}'")
             roi.export_mesh_obj(output_dir / f"{name}_mesh.obj")
 
         if args.coords:
+            logger.info(f"Exporting voxel coordinates for ROI '{name}'")
             coords = roi.get_voxel_coordinates()
             npy_path = output_dir / f"{name}_coords.npy"
             import numpy as np
@@ -136,12 +161,13 @@ def run_conversion(
 
 def main() -> int:
     args = parse_args()
+    configure_logging(args.debug)
 
     try:
         validate_paths(args.dicom_dir, args.output_dir)
         run_conversion(args.dicom_dir, args.output_dir, args.names, args)
     except Exception as e:
-        print(f"Error: {e}", file=sys.stderr)
+        logger.error(f"{e}")
         return 1
 
     return 0
