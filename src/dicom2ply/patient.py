@@ -162,6 +162,9 @@ class Patient:
             try:
                 ds = self._reader(path, stop_before_pixels=True)
             except Exception:
+                if self.debug:
+                    # Best-effort debug info; keep behavior silent by default
+                    print(f"[dicom2ply] Skipping unreadable DICOM file: {path}")
                 continue
             datasets[path] = ds
         return datasets
@@ -178,7 +181,22 @@ class Patient:
         raise FileNotFoundError("No RTSTRUCT file found (Modality=RTSTRUCT).")
 
     def _index_ct_slices(self) -> dict[str, CTSlice]:
+        """
+        Build a deterministic CT slice index using robust slice position.
+
+        Uses ImageOrientationPatient + ImagePositionPatient via geometry.slice_position
+        when available; falls back to InstanceNumber otherwise.
+        """
+        from dicom2ply.geometry import slice_position
+
         slices: list[CTSlice] = []
+
+        rows: int | None = None
+        cols: int | None = None
+        spacing: tuple[float, float] | None = None
+        orientation: (
+            tuple[tuple[float, float, float], tuple[float, float, float]] | None
+        ) = None
 
         for path in self._files:
             ds = self._datasets.get(path)
@@ -190,20 +208,58 @@ class Patient:
 
             sop = getattr(ds, "SOPInstanceUID", None)
             if sop is None:
+                if self.debug:
+                    print(f"[dicom2ply] CT slice without SOPInstanceUID: {path}")
                 continue
 
-            ipp = getattr(ds, "ImagePositionPatient", None)
-            if ipp and len(ipp) >= 3:
-                try:
-                    z = float(ipp[2])
-                except (TypeError, ValueError):
-                    z = float(getattr(ds, "InstanceNumber", 0))
+            # Geometry consistency checks (rows/cols, spacing, orientation)
+            try:
+                r = int(ds.Rows)
+                c = int(ds.Columns)
+                px = float(ds.PixelSpacing[0])
+                py = float(ds.PixelSpacing[1])
+                iop = tuple(float(v) for v in ds.ImageOrientationPatient)
+            except Exception:
+                if self.debug:
+                    print(f"[dicom2ply] CT slice missing geometry metadata: {path}")
+                continue
+
+            if rows is None:
+                rows, cols = r, c
+                spacing = (px, py)
+                orientation = (tuple(iop[:3]), tuple(iop[3:]))
             else:
-                # safer fallback than collapsing everything to 0.0
+                if (r, c) != (rows, cols) and self.debug:
+                    print(
+                        f"[dicom2ply] Inconsistent CT dimensions: "
+                        f"{(r, c)} vs {(rows, cols)} in {path}"
+                    )
+                if spacing is not None and (px, py) != spacing and self.debug:
+                    print(
+                        f"[dicom2ply] Inconsistent CT pixel spacing: "
+                        f"{(px, py)} vs {spacing} in {path}"
+                    )
+                if (
+                    orientation is not None
+                    and (tuple(iop[:3]), tuple(iop[3:])) != orientation
+                    and self.debug
+                ):
+                    print(
+                        "[dicom2ply] Inconsistent CT orientation in series "
+                        f"(ImageOrientationPatient) for {path}"
+                    )
+
+            # Robust slice position: use normal·origin when possible
+            z: float
+            try:
+                z = slice_position(ds)
+            except Exception:
+                # Fallback: InstanceNumber as last resort
                 z = float(getattr(ds, "InstanceNumber", 0))
 
             slices.append(CTSlice(sop_uid=str(sop), path=path, z=z))
 
+        # Sort by geometric slice position
         slices.sort(key=lambda s: s.z)
         return {s.sop_uid: s for s in slices}
 

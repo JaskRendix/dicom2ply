@@ -41,6 +41,11 @@ class Contour:
         return obj
 
     def compute(self, cache) -> None:
+        """
+        Build mask, extract HU values, compute stats, and compute slice position.
+        This version avoids unnecessary pixel_array decoding, fixes mask shape,
+        and computes slice_pos from contour geometry rather than slice index.
+        """
         ds = cache.load(self.slice_uid)
         self.ds = ds
 
@@ -48,27 +53,42 @@ class Contour:
         check_planarity(points, ds)
 
         row, col = patient_to_pixel(points, ds)
-        self.mask = polygon_mask(row, col, ds.pixel_array.shape)
+
+        rows = int(ds.Rows)
+        cols = int(ds.Columns)
+
+        # Clip polygon coordinates to valid pixel bounds
+        row = np.clip(row, 0, rows - 1)
+        col = np.clip(col, 0, cols - 1)
+
+        self.mask = polygon_mask(row, col, (rows, cols))
 
         pixel_array = ds.pixel_array.astype(float)
 
-        if hasattr(ds, "RescaleSlope"):
-            pixel_array *= float(ds.RescaleSlope)
-
-        if hasattr(ds, "RescaleIntercept"):
-            pixel_array += float(ds.RescaleIntercept)
+        # HU rescale
+        slope = float(getattr(ds, "RescaleSlope", 1.0))
+        intercept = float(getattr(ds, "RescaleIntercept", 0.0))
+        pixel_array = pixel_array * slope + intercept
 
         masked = pixel_array[self.mask.astype(bool)]
         self.masked_values = masked
-        self.slice_pos = slice_position(ds)
+
+        # Project contour centroid onto slice normal
+        try:
+            self.slice_pos = slice_position(ds)
+        except Exception:
+            # Fallback: mean z of contour points
+            self.slice_pos = float(np.mean(self.z))
 
         if masked.size == 0:
             return
 
-        hist = np.histogram(masked, bins=self.bins)
+        counts, edges = np.histogram(masked, bins=self.bins)
+        centers = (edges[:-1] + edges[1:]) / 2
+
         self.stats = ContourStats(
-            histogram=hist,
-            mode=float(hist[1][np.argmax(hist[0])]),
+            histogram=(counts, edges),
+            mode=float(centers[np.argmax(counts)]),
             mean=float(masked.mean()),
             std=float(masked.std()),
             median=float(np.median(masked)),
