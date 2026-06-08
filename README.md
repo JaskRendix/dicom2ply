@@ -13,16 +13,23 @@ This is a modern rewrite of the original project by Christopher M. Poole
 - Extracts ROI contours from DICOM RTSTRUCT files  
 - Reconstructs 3D coordinates using CT slice geometry  
 - Exports one binary PLY file per ROI  
-- Optional ROI filtering (`--names`)  
+- ROI selection:
+  - `--names` for explicit ROI lists  
+  - `--filter-name` for exact matches  
+  - `--filter-pattern` for glob patterns  
+- ROI inspection:
+  - `--list-rois` prints ROI names and basic stats  
 - Additional export formats:
   - Binary mask NIfTI (`--nifti`)
   - Float32 mask NIfTI (`--float-nifti`)
-  - ROI statistics as JSON (`--json`)
-  - Mask slices as PNG (`--png-slices`)
+  - ROI statistics JSON (`--json`)
+  - Minimal metadata JSON (`--save-metadata`)
+  - PNG mask slices (`--png-slices`)
   - Marching‑cubes meshes: PLY, STL, OBJ (`--mesh`, `--stl`, `--obj`)
-  - Voxel coordinates as `.npy` (`--coords`)
-- Structured logging with optional verbose mode (`--debug`)
-- Modular codebase (`contour`, `roi`, `ct_cache`, `patient`, `ply_writer`)
+  - Voxel coordinates (`--coords`)
+- Batch processing via YAML config (`--config`)
+- Structured logging with progress indicators
+- Modular codebase (`contour`, `roi`, `ct_cache`, `geometry`, `masking`, `patient`, `ply_writer`)
 - Full test suite and GitHub Actions CI
 - Modern `src/` layout and Python packaging
 
@@ -42,6 +49,15 @@ pip install -e .
 
 Requires Python 3.10 or newer.
 
+Optional dependencies:
+
+```
+pip install dicom2ply[imageio]
+pip install dicom2ply[nifti]
+pip install dicom2ply[yaml]
+pip install dicom2ply[test]
+```
+
 ---
 
 ## Command-line usage
@@ -55,44 +71,77 @@ dicom2ply <dicom_dir> <output_dir> [options]
 - `dicom_dir`: directory containing CT slices and one RTSTRUCT  
 - `output_dir`: directory where output files are written  
 
-### ROI selection
+---
+
+## ROI selection
 
 ```
 --names ROI1 ROI2 ...
+--filter-name ROI1 --filter-name ROI2
+--filter-pattern "*GTV*"
 ```
 
-Exports only the listed ROIs.  
-If omitted, all ROIs in the RTSTRUCT are processed.
+If no selection flags are provided, all ROIs are exported.
 
-### Export options
+---
+
+## ROI inspection
+
+```
+--list-rois
+```
+
+Prints ROI names and basic statistics, then exits.
+
+---
+
+## Export options
 
 | Flag | Output |
 |------|--------|
-| `--nifti` | Binary mask NIfTI (`<name>.nii.gz`) |
-| `--float-nifti` | Float32 mask NIfTI (`<name>_float.nii.gz`) |
-| `--json` | ROI statistics (`<name>.json`) |
-| `--png-slices` | PNG mask slices (`<name>_slices/...`) |
-| `--mesh` | Marching‑cubes mesh (`<name>_mesh.ply`) |
-| `--stl` | STL mesh (`<name>_mesh.stl`) |
-| `--obj` | OBJ mesh (`<name>_mesh.obj`) |
-| `--coords` | Voxel coordinates (`<name>_coords.npy`) |
+| `--nifti` | Binary mask NIfTI |
+| `--float-nifti` | Float32 mask NIfTI |
+| `--json` | ROI statistics JSON |
+| `--save-metadata` | Minimal metadata JSON |
+| `--png-slices` | PNG mask slices |
+| `--mesh` | PLY mesh |
+| `--stl` | STL mesh |
+| `--obj` | OBJ mesh |
+| `--coords` | Voxel coordinates `.npy` |
 
-### Logging
+---
 
-By default, the tool prints only high‑level progress and errors.
+## Batch processing
 
-Verbose diagnostic logging:
+```
+--config config.yaml
+```
+
+YAML file must contain a list of runs:
+
+```yaml
+- dicom_dir: ./dicom
+  output_dir: ./out
+  filter_name: ["GTV"]
+  mesh: true
+```
+
+---
+
+## Logging
+
+Default logging prints high‑level progress.
 
 ```
 --debug
 ```
 
-This prints details about CT slice indexing, geometry checks, planarity validation, skipped contours, missing slices, and mesh generation.
+Enables detailed logging for CT indexing, geometry checks, contour validation, and mesh generation.
 
-Example:
+Progress indicators show ROI export position:
 
 ```
-dicom2ply ./dicom ./out --debug
+[1/3] Exporting ROI 'GTV'
 ```
 
 ---
@@ -101,14 +150,15 @@ dicom2ply ./dicom ./out --debug
 
 ```
 dicom2ply ./dicom ./out \
-    --names GTV CTV \
-    --json --mesh --png-slices
+    --filter-pattern "*TV" \
+    --json --mesh --png-slices --save-metadata
 ```
 
 Produces:
 
 - `roi_GTV.ply`, `roi_CTV.ply`
 - `GTV.json`, `CTV.json`
+- `GTV_meta.json`, `CTV_meta.json`
 - `GTV_mesh.ply`, `CTV_mesh.ply`
 - `GTV_slices/...`, `CTV_slices/...`
 
@@ -121,13 +171,8 @@ from dicom2ply.patient import Patient
 
 p = Patient("/path/to/dicom")
 
-# Export PLY only
 p.dump_ply(directory="/path/to/out")
 
-# Export PLY + binary NIfTI
-p.dump_ply(directory="/path/to/out", export_nifti=True)
-
-# Access ROI objects
 roi = p.get_roi("GTV")
 roi.export_mask_nifti_float("GTV_float.nii.gz")
 roi.export_all_slices_png("GTV_slices")
@@ -160,19 +205,20 @@ README.md
 
 ## Tests
 
-Run:
-
 ```
 pytest
 ```
 
-Tests cover:
+Covers:
 
 - ROI geometry reconstruction  
-- Contour parsing and validation  
-- CT slice lookup and metadata handling  
+- Contour parsing  
+- CT slice lookup  
 - PLY writing  
-- CLI execution and ROI filtering  
+- CLI execution  
+- ROI filtering and listing  
+- Metadata export  
+- YAML config handling  
 - Logging and error propagation  
 
 ---
@@ -183,12 +229,4 @@ Tests cover:
 - Standard RTSTRUCT contour encoding  
 - No gantry tilt  
 - No interpolation between missing slices  
-- Mesh export requires at least a 2×2×2 mask volume  
-  (thin ROIs produce an empty mesh)
-
----
-
-## Relation to the original project
-
-This project keeps the purpose and name of the original `dicom2ply` by Christopher M. Poole.  
-The implementation has been rewritten to support Python 3, remove legacy dependencies, adopt a modular architecture, provide a CLI entry point, include automated tests, and follow modern packaging conventions.
+- Mesh export requires a non‑empty mask volume  
