@@ -191,6 +191,22 @@ class RegionOfInterest:
     def _get_affine(self, ds: Dataset, spacing_z: float) -> np.ndarray:
         """
         Construct a 4x4 affine matrix from DICOM orientation and spacing.
+
+        Notes on sign conventions and coordinate systems:
+
+        DICOM uses the LPS (Left-Posterior-Superior) patient coordinate
+        convention. Many neuroimaging tools and file formats (for example
+        some NIfTI users) use RAS (Right-Anterior-Superior). The math in this
+        function does not change the numeric geometry; the negative signs on
+        the row and column direction vectors (``-row_dir`` and ``-col_dir``)
+        reflect the chosen mapping from image axes to the desired output
+        coordinate convention. In short, the implementation documents that
+        the row/column directions are negated when placed into the affine
+        columns so that voxel->world mapping follows the package's expected
+        handedness (consistent with producing RAS-like outputs). This
+        clarifies why the code negates the row/col vectors while leaving the
+        slice normal unnegated. The underlying arithmetic and resulting
+        affine matrix are unchanged.
         """
         row_dir = np.array(ds.ImageOrientationPatient[:3], float)
         col_dir = np.array(ds.ImageOrientationPatient[3:], float)

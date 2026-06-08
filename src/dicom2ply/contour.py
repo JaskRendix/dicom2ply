@@ -66,9 +66,21 @@ class Contour:
         rows = int(ds.Rows)
         cols = int(ds.Columns)
 
+        # Capture original coordinates to detect clipping and then clip
+        orig_row = row.copy()
+        orig_col = col.copy()
+
         # Clip polygon coordinates to valid pixel bounds
         row = np.clip(row, 0, rows - 1)
         col = np.clip(col, 0, cols - 1)
+
+        # Warn if any contour points were clipped to image boundaries
+        clipped_mask = (orig_row != row) | (orig_col != col)
+        if np.any(clipped_mask):
+            num_clipped = int(np.count_nonzero(clipped_mask))
+            logger.warning(
+                f"Clipping {num_clipped} contour point(s) to image bounds for UID {self.slice_uid}"
+            )
 
         self.mask = polygon_mask(row, col, (rows, cols))
 
