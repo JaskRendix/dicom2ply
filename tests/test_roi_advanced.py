@@ -261,6 +261,64 @@ def test_duplicate_sopuid_different_z(synthetic_ct):
         )
 
 
+def test_duplicate_sopuid_inconsistent_slice_pos_without_planarity(tmp_path):
+
+    import numpy as np
+    import pydicom
+    from pydicom.dataset import FileDataset, FileMetaDataset
+
+    meta = FileMetaDataset()
+    meta.TransferSyntaxUID = pydicom.uid.ExplicitVRLittleEndian
+    meta.MediaStorageSOPClassUID = pydicom.uid.CTImageStorage
+    meta.MediaStorageSOPInstanceUID = "1.2.3.4.5"
+
+    path = tmp_path / "ct.dcm"
+    ds = FileDataset(str(path), {}, file_meta=meta, preamble=b"\0" * 128)
+    ds.Modality = "CT"
+    ds.SOPInstanceUID = meta.MediaStorageSOPInstanceUID
+    ds.ImageOrientationPatient = [1, 0, 0, 0, 1, 0]
+    ds.PixelSpacing = [1, 1]
+    ds.SliceThickness = 1
+    ds.Rows = ds.Columns = 10
+    ds.PhotometricInterpretation = "MONOCHROME2"
+    ds.BitsAllocated = ds.BitsStored = 16
+    ds.HighBit = 15
+    ds.PixelRepresentation = 1
+    ds.PixelData = np.zeros((10, 10), np.int16).tobytes()
+
+    # First save with Z = 0
+    ds.ImagePositionPatient = [0, 0, 0]
+    ds.save_as(path)
+
+    def make_contour():
+        c = pydicom.dataset.Dataset()
+        c.ContourData = [2, 2, 0, 7, 2, 0, 7, 7, 0, 2, 7, 0]
+        img = pydicom.dataset.Dataset()
+        img.ReferencedSOPInstanceUID = ds.SOPInstanceUID
+        c.ContourImageSequence = [img]
+        return c
+
+    contour1 = make_contour()
+    contour2 = make_contour()
+
+    # Reload CT and shift ImagePositionPatient slightly
+    ds2 = pydicom.dcmread(path)
+    ds2.ImagePositionPatient = [0, 0, 0.5]  # still coplanar for Z=0 contours
+    ds2.save_as(path)  # overwrite
+
+    # ROI should now see inconsistent slice_pos for same SOPUID
+    roi_ds = pydicom.dataset.Dataset()
+    roi_ds.ContourSequence = [contour1, contour2]
+
+    with pytest.raises(ValueError):
+        RegionOfInterest.from_rt_roi(
+            roi_ds=roi_ds,
+            name="BadROI",
+            bins=16,
+            ct_index={ds.SOPInstanceUID: str(path)},
+        )
+
+
 def test_missing_ct_slice_raises(synthetic_rtstruct):
     rt = pydicom.dcmread(synthetic_rtstruct)
     roi_ds = rt.ROIContourSequence[0]

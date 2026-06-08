@@ -47,8 +47,19 @@ class RegionOfInterest:
         contours: list[Contour] = []
         for contour_ds in seq:
             c = Contour.from_rt(contour_ds, bins=bins, cache=cache)
-            if c.stats.mean is not None:  # skip empty masks
+            if c.stats.mean is not None:
                 contours.append(c)
+
+        slice_map = {}
+        for c in contours:
+            if c.slice_uid not in slice_map:
+                slice_map[c.slice_uid] = c.slice_pos
+            else:
+                if abs(slice_map[c.slice_uid] - c.slice_pos) > 1e-3:
+                    raise ValueError(
+                        f"Contours for SOPInstanceUID {c.slice_uid} have inconsistent "
+                        f"slice positions: {slice_map[c.slice_uid]} vs {c.slice_pos}"
+                    )
 
         # Sort contours deterministically by slice position
         contours.sort(key=lambda c: c.slice_pos)
