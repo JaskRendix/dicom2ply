@@ -18,12 +18,12 @@ authors = [
 dependencies = [
   "pydicom>=2.4",
   "numpy>=1.26",
-  "pillow>=10.0",
   "scikit-image>=0.24",
   "plyfile>=1.0",
 ]
 
 [project.optional-dependencies]
+imageio = ["imageio"]
 nifti = ["nibabel>=5.2"]
 test = ["pytest>=8.0", "pytest-cov>=4.1"]
 
