@@ -197,20 +197,17 @@ class RegionOfInterest:
 
         return affine
 
-    def export_nifti(self, output_path: str | Path) -> None:
+    def _export_nifti(self, output_path: str | Path, dtype) -> None:
         """
-        Export the ROI mask stack as a NIfTI volume using true geometric
-        slice positions and correct DICOM orientation.
+        Internal helper for NIfTI export with configurable dtype.
         """
         try:
             import nibabel as nib
         except ImportError:
-            print("Cannot export NIfTI: nibabel not installed.")
-            return
+            raise RuntimeError("Cannot export NIfTI: nibabel not installed.")
 
         if self.mask_stack is None or not self.contours:
-            print("No mask data available for NIfTI export.")
-            return
+            raise RuntimeError("No mask data available for NIfTI export.")
 
         ds = self.contours[0].ds
 
@@ -218,41 +215,21 @@ class RegionOfInterest:
         affine = self._get_affine(ds, spacing_z)
 
         # NIfTI expects (X,Y,Z) = (cols, rows, slices)
-        data = np.swapaxes(self.mask_stack, 0, 1).astype(np.uint8)
+        data = np.swapaxes(self.mask_stack, 0, 1).astype(dtype)
 
         img = nib.Nifti1Image(data, affine)
         img.header.set_sform(affine, code=1)
         img.header.set_qform(affine, code=1)
 
         nib.save(img, str(output_path))
+
+    def export_nifti(self, output_path: str | Path) -> None:
+        """Export mask as uint8 NIfTI."""
+        self._export_nifti(output_path, np.uint8)
 
     def export_mask_nifti_float(self, output_path: str | Path) -> None:
-        """
-        Export the ROI mask as a float32 NIfTI volume using true geometric
-        slice positions and correct DICOM orientation.
-        """
-        try:
-            import nibabel as nib
-        except ImportError:
-            print("Cannot export NIfTI: nibabel not installed.")
-            return
-
-        if self.mask_stack is None or self.slice_positions is None:
-            print("No mask data available.")
-            return
-
-        ds = self.contours[0].ds
-
-        spacing_z = self._get_spacing_z(ds)
-        affine = self._get_affine(ds, spacing_z)
-
-        data = np.swapaxes(self.mask_stack, 0, 1).astype(np.float32)
-
-        img = nib.Nifti1Image(data, affine)
-        img.header.set_sform(affine, code=1)
-        img.header.set_qform(affine, code=1)
-
-        nib.save(img, str(output_path))
+        """Export mask as float32 NIfTI."""
+        self._export_nifti(output_path, np.float32)
 
     def compute_volume_stats(self) -> None:
         """

@@ -24,8 +24,8 @@ dependencies = [
 
 [project.optional-dependencies]
 imageio = ["imageio"]
-nifti = ["nibabel>=5.2"]
-test = ["pytest>=8.0", "pytest-cov>=4.1"]
+nifti = ["nibabel"]
+test = ["pytest", "pytest-cov"]
 
 [project.scripts]
 dicom2ply = "dicom2ply.cli:main"
