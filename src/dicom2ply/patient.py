@@ -25,6 +25,11 @@ class Patient:
         self,
         dicom_dir: str | Path,
         debug: bool = True,
+        bins: int = 4096,
+        slice_tol: float = 0.01,
+        planarity_tol: float = 1e-2,
+        validate: bool = False,
+        strict_geometry: bool = False,
         *,
         reader: Callable[..., FileDataset] = pydicom.dcmread,
         walker: Callable[[Path], Iterable[Path]] | None = None,
@@ -36,6 +41,11 @@ class Patient:
             logger.setLevel(logging.INFO)
 
         self.debug = debug
+        self.bins = bins
+        self.slice_tol = slice_tol
+        self.planarity_tol = planarity_tol
+        self.validate = validate
+        self.strict_geometry = strict_geometry
         self.dicom_dir = Path(dicom_dir)
         self._reader = reader
         self._walker = walker or (lambda p: (f for f in p.iterdir() if f.is_file()))
@@ -101,8 +111,10 @@ class Patient:
             region = RegionOfInterest.from_rt_roi(
                 roi_ds=roi,
                 name=name,
-                bins=4096,
+                bins=self.bins,
                 ct_index=self.ct_index,
+                slice_tol=self.slice_tol,
+                planarity_tol=self.planarity_tol,
             )
             self._roi_cache[name] = region
 
@@ -179,6 +191,9 @@ class Patient:
         rows = cols = None
         spacing = None
         orientation = None
+        inconsistent_dims = False
+        inconsistent_spacing = False
+        inconsistent_orientation = False
 
         for path in self._files:
             ds = self._datasets.get(path)
@@ -216,12 +231,15 @@ class Patient:
                     logger.debug(
                         f"Inconsistent CT dimensions: {(r, c)} vs {(rows, cols)} in {path}"
                     )
+                    inconsistent_dims = True
                 if spacing and (px, py) != spacing:
                     logger.debug(
                         f"Inconsistent CT pixel spacing: {(px, py)} vs {spacing} in {path}"
                     )
+                    inconsistent_spacing = True
                 if orientation and (tuple(iop[:3]), tuple(iop[3:])) != orientation:
                     logger.debug(f"Inconsistent CT orientation in: {path}")
+                    inconsistent_orientation = True
 
             try:
                 z = slice_position(ds)
@@ -233,6 +251,39 @@ class Patient:
 
         slices.sort(key=lambda s: s.z)
         logger.debug(f"Indexed {len(slices)} CT slices")
+
+        # Geometry validation summary (printed when debug or validate flag set)
+        num_slices = len(slices)
+        z_positions = [s.z for s in slices]
+        slice_spacing_info = None
+        if len(z_positions) > 1:
+            diffs = [
+                abs(z_positions[i + 1] - z_positions[i])
+                for i in range(len(z_positions) - 1)
+            ]
+            slice_spacing_info = {
+                "min": min(diffs),
+                "max": max(diffs),
+                "mean": sum(diffs) / len(diffs),
+            }
+
+        if self.debug or self.validate:
+            logger.info("CT Geometry Summary:")
+            logger.info(f"  slices: {num_slices}")
+            logger.info(f"  dimensions: {rows}x{cols}")
+            logger.info(f"  pixel_spacing: {spacing}")
+            if slice_spacing_info is not None:
+                logger.info(
+                    f"  slice_spacing (min/mean/max): {slice_spacing_info['min']:.4f}/"
+                    f"{slice_spacing_info['mean']:.4f}/{slice_spacing_info['max']:.4f}"
+                )
+            logger.info(f"  orientation_consistent: {not inconsistent_orientation}")
+
+        # Strict geometry enforcement
+        if self.strict_geometry and (
+            inconsistent_dims or inconsistent_spacing or inconsistent_orientation
+        ):
+            raise RuntimeError("CT geometry inconsistent across slices (strict mode)")
 
         return {s.sop_uid: s for s in slices}
 
@@ -300,6 +351,8 @@ class Patient:
         return RegionOfInterest.from_rt_roi(
             roi_ds=roi_ds,
             name=name,
-            bins=4096,
+            bins=self.bins,
             ct_index=self.ct_index,
+            slice_tol=self.slice_tol,
+            planarity_tol=self.planarity_tol,
         )

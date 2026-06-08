@@ -35,7 +35,13 @@ class RegionOfInterest:
 
     @classmethod
     def from_rt_roi(
-        cls, roi_ds: Dataset, name: str, bins: int, ct_index: dict[str, str]
+        cls,
+        roi_ds: Dataset,
+        name: str,
+        bins: int,
+        ct_index: dict[str, str],
+        slice_tol: float = 0.01,
+        planarity_tol: float = 1e-2,
     ):
         """
         Build an ROI from an RTSTRUCT ROIContourSequence entry.
@@ -49,7 +55,9 @@ class RegionOfInterest:
 
         contours: list[Contour] = []
         for contour_ds in seq:
-            c = Contour.from_rt(contour_ds, bins=bins, cache=cache)
+            c = Contour.from_rt(
+                contour_ds, bins=bins, cache=cache, planarity_tol=planarity_tol
+            )
             if c.stats.mean is None:
                 logger.warning(f"Skipping empty contour in ROI '{name}'")
                 continue
@@ -60,7 +68,7 @@ class RegionOfInterest:
             if c.slice_uid not in slice_map:
                 slice_map[c.slice_uid] = c.slice_pos
             else:
-                if abs(slice_map[c.slice_uid] - c.slice_pos) > 1e-3:
+                if abs(slice_map[c.slice_uid] - c.slice_pos) > slice_tol:
                     logger.error(
                         f"Inconsistent slice positions for UID {c.slice_uid}: "
                         f"{slice_map[c.slice_uid]} vs {c.slice_pos}"
@@ -74,6 +82,8 @@ class RegionOfInterest:
         contours.sort(key=lambda c: c.slice_pos)
 
         obj = cls(name=name, contours=contours, bins=bins)
+        # store tolerance for mask stacking
+        obj.slice_tol = slice_tol
 
         obj.compute_extent()  # geometry only
         obj.compute_mask_stack()  # build 3D mask
@@ -143,14 +153,32 @@ class RegionOfInterest:
         cols = int(ds0.Columns)
 
         # Collect true geometric slice positions
-        positions = np.array([float(c.slice_pos) for c in self.contours])
+        positions = np.array(
+            [float(c.slice_pos) for c in self.contours if c.slice_pos is not None]
+        )
 
-        # Floating‑point safe unique positions
-        uniq = np.unique(np.round(positions, decimals=5))
+        # Group positions within tolerance into unique slice positions
+        slice_tol = getattr(self, "slice_tol", 0.01)
+        sorted_pos = np.sort(positions)
+        clusters: list[float] = []
+        current_cluster: list[float] = []
+        for p in sorted_pos:
+            if not current_cluster:
+                current_cluster = [p]
+                continue
+            if abs(p - current_cluster[-1]) <= slice_tol:
+                current_cluster.append(p)
+            else:
+                clusters.append(float(np.mean(current_cluster)))
+                current_cluster = [p]
+        if current_cluster:
+            clusters.append(float(np.mean(current_cluster)))
+
+        uniq = np.array(clusters, float)
         uniq.sort()
         self.slice_positions = uniq
 
-        # Map slice_pos → index
+        # Map slice_pos → index (cluster representative)
         pos_to_idx = {p: i for i, p in enumerate(uniq)}
 
         # Allocate mask volume
@@ -160,11 +188,21 @@ class RegionOfInterest:
             if c.slice_pos is None:
                 continue
 
-            # Round slice_pos to match uniq keys
-            p = float(np.round(c.slice_pos, 5))
-            if p not in pos_to_idx:
+            if c.slice_pos is None:
+                logger.warning(
+                    f"Dropping contour with unknown slice position in ROI '{self.name}' for UID {c.slice_uid}"
+                )
                 continue
-            idx = pos_to_idx[p]
+
+            # Find cluster index within tolerance
+            diffs = np.abs(uniq - float(c.slice_pos))
+            idxs = np.where(diffs <= getattr(self, "slice_tol", 0.01))[0]
+            if idxs.size == 0:
+                logger.warning(
+                    f"Dropping contour for UID {c.slice_uid} with slice_pos {c.slice_pos} (no matching slice within tolerance) in ROI '{self.name}'"
+                )
+                continue
+            idx = int(idxs[0])
 
             # Validate mask geometry
             if c.mask is None or c.mask.shape != (rows, cols):

@@ -56,6 +56,39 @@ def parse_args() -> argparse.Namespace:
         help="Enable verbose debug output during DICOM parsing",
     )
 
+    parser.add_argument(
+        "--validate",
+        action="store_true",
+        help="Print geometry validation summary (implies verbose output)",
+    )
+
+    parser.add_argument(
+        "--strict-geometry",
+        action="store_true",
+        help="Treat geometry mismatches as errors instead of warnings",
+    )
+
+    parser.add_argument(
+        "--slice-tolerance",
+        type=float,
+        default=0.01,
+        help="Slice position matching tolerance in mm (default: 0.01)",
+    )
+
+    parser.add_argument(
+        "--histogram-bins",
+        type=int,
+        default=4096,
+        help="Number of histogram bins used for HU statistics (default: 4096)",
+    )
+
+    parser.add_argument(
+        "--planarity-tolerance",
+        type=float,
+        default=1e-2,
+        help="Planarity tolerance in mm for contour planarity checks (default: 1e-2)",
+    )
+
     return parser.parse_args()
 
 
@@ -112,7 +145,15 @@ def run_conversion(
     names: Iterable[str] | None,
     args: argparse.Namespace,
 ) -> None:
-    patient = Patient(str(dicom_dir), debug=args.debug)
+    patient = Patient(
+        str(dicom_dir),
+        debug=args.debug,
+        bins=args.histogram_bins,
+        slice_tol=args.slice_tolerance,
+        planarity_tol=args.planarity_tolerance,
+        validate=args.validate,
+        strict_geometry=args.strict_geometry,
+    )
     validated = safe_validate_roi_names(patient, names)
 
     logger.info("Exporting PLY files...")

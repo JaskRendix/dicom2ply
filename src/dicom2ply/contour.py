@@ -34,16 +34,18 @@ class Contour:
     slice_pos: float | None = None
 
     @classmethod
-    def from_rt(cls, contour_ds: Dataset, bins: int, cache) -> "Contour":
+    def from_rt(
+        cls, contour_ds: Dataset, bins: int, cache, planarity_tol: float = 1e-2
+    ) -> "Contour":
         coords = np.asarray(contour_ds.ContourData, float).reshape(-1, 3)
         x, y, z = coords.T
         uid = contour_ds.ContourImageSequence[0].ReferencedSOPInstanceUID
 
         obj = cls(x, y, z, uid, bins)
-        obj.compute(cache)
+        obj.compute(cache, planarity_tol=planarity_tol)
         return obj
 
-    def compute(self, cache) -> None:
+    def compute(self, cache, planarity_tol: float = 1e-2) -> None:
         """
         Build mask, extract HU values, compute stats, and compute slice position.
         This version avoids unnecessary pixel_array decoding, fixes mask shape,
@@ -56,7 +58,7 @@ class Contour:
 
         # Non-planar must raise
         try:
-            check_planarity(points, ds)
+            check_planarity(points, ds, tol_mm=planarity_tol)
         except Exception as e:
             logger.error(f"Non-planar contour for UID {self.slice_uid}: {e}")
             raise
