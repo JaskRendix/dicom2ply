@@ -150,8 +150,8 @@ class Patient:
         output_dir = Path(directory)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        for name in selected:
-            logger.info(f"Exporting ROI '{name}' to PLY")
+        for i, name in enumerate(selected):
+            logger.info(f"[{i+1}/{len(selected)}] Exporting ROI '{name}' to PLY")
             roi = self.get_roi(name)
             write_roi_ply(roi, output_dir)
 

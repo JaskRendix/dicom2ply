@@ -1,8 +1,10 @@
+import json
 import shutil
 import subprocess
 
 import numpy as np
 import pydicom
+import pytest
 from pydicom.dataset import Dataset, FileDataset, FileMetaDataset
 
 
@@ -443,3 +445,131 @@ def test_cli_obj_export(tmp_path, synthetic_ct, synthetic_rtstruct):
 
     assert result.returncode == 0
     assert list(output.glob("*_mesh.obj"))
+
+
+def test_cli_list_rois(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom = tmp_path / "dicom"
+    dicom.mkdir()
+    shutil.copy(synthetic_ct, dicom / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom / "RS.dcm")
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom), str(tmp_path / "out"), "--list-rois"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "TestROI" in result.stdout or "TestROI" in result.stderr
+
+
+def test_cli_filter_name(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom = tmp_path / "dicom"
+    dicom.mkdir()
+    shutil.copy(synthetic_ct, dicom / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom / "RS.dcm")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom), str(outdir), "--filter-name", "TestROI"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+
+    files = list(outdir.glob("*.ply"))
+    assert len(files) == 1
+    assert "TestROI" in files[0].name
+
+
+def test_cli_filter_pattern(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom = tmp_path / "dicom"
+    dicom.mkdir()
+    shutil.copy(synthetic_ct, dicom / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom / "RS.dcm")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom), str(outdir), "--filter-pattern", "*ROI*"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+
+    files = list(outdir.glob("*.ply"))
+    assert files
+    assert any("ROI" in f.name for f in files)
+
+
+def test_cli_save_metadata(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom = tmp_path / "dicom"
+    dicom.mkdir()
+    shutil.copy(synthetic_ct, dicom / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom / "RS.dcm")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom), str(outdir), "--save-metadata"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+
+    meta_files = list(outdir.glob("*_meta.json"))
+    assert meta_files, "No metadata files were written"
+
+    meta = json.loads(meta_files[0].read_text())
+    assert "roi_name" in meta
+    assert "num_voxels" in meta
+
+
+def test_cli_progress_logging(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom = tmp_path / "dicom"
+    dicom.mkdir()
+    shutil.copy(synthetic_ct, dicom / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom / "RS.dcm")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom), str(outdir)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "[1/" in result.stdout or "[1/" in result.stderr
+
+
+@pytest.mark.skipif(
+    "yaml" not in pytest.importorskip("yaml").__name__, reason="PyYAML not installed"
+)
+def test_cli_yaml_config(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom = tmp_path / "dicom"
+    dicom.mkdir()
+    shutil.copy(synthetic_ct, dicom / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom / "RS.dcm")
+
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(
+        f"""
+        - dicom_dir: {dicom}
+          output_dir: {tmp_path}/out_cfg
+          filter_name: ["TestROI"]
+        """
+    )
+
+    result = subprocess.run(
+        ["dicom2ply", "X", "Y", "--config", str(cfg)],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+
+    files = list((tmp_path / "out_cfg").glob("*.ply"))
+    assert files
