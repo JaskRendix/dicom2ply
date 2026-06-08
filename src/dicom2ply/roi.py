@@ -400,32 +400,30 @@ class RegionOfInterest:
         self._mesh_faces = faces.astype(np.int32)
         return self._mesh_verts, self._mesh_faces
 
-    def export_mesh_ply(self, output_path: str | Path) -> None:
+    def _write_mesh(
+        self, output_path: Path, verts: np.ndarray, faces: np.ndarray, fmt: str
+    ) -> None:
         """
-        Export a surface mesh (marching cubes) of the ROI mask as a PLY file.
+        Shared mesh writer for PLY, STL, and OBJ formats.
+        Assumes verts (N,3) float32 and faces (M,3) int32.
         """
-        try:
+        fmt = fmt.lower()
+
+        if fmt == "ply":
             from plyfile import PlyData, PlyElement
-        except ImportError:
-            print("Cannot export mesh: plyfile not installed.")
-            return
 
-        if self.mask_stack is None:
-            print("No mask stack available.")
-            return
+            if verts.size == 0 or faces.size == 0:
+                vertex_data = np.zeros(0, dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")])
+                face_data = np.zeros(0, dtype=[("vertex_indices", "i4", (3,))])
+            else:
+                vertex_data = np.zeros(
+                    len(verts), dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")]
+                )
+                vertex_data["x"], vertex_data["y"], vertex_data["z"] = verts.T
 
-        try:
-            verts, faces = self._build_mesh()
-        except ImportError as e:
-            print(str(e))
-            return
-        except ValueError as e:
-            print(str(e))
-            return
+                face_data = np.zeros(len(faces), dtype=[("vertex_indices", "i4", (3,))])
+                face_data["vertex_indices"] = faces
 
-        if verts.size == 0 or faces.size == 0:
-            vertex_data = np.zeros(0, dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")])
-            face_data = np.zeros(0, dtype=[("vertex_indices", "i4", (3,))])
             ply = PlyData(
                 [
                     PlyElement.describe(vertex_data, "vertex"),
@@ -436,102 +434,53 @@ class RegionOfInterest:
             ply.write(str(output_path))
             return
 
-        vertex_data = np.zeros(
-            len(verts), dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")]
-        )
-        vertex_data["x"], vertex_data["y"], vertex_data["z"] = verts.T
-
-        face_data = np.zeros(len(faces), dtype=[("vertex_indices", "i4", (3,))])
-        face_data["vertex_indices"] = faces
-
-        ply = PlyData(
-            [
-                PlyElement.describe(vertex_data, "vertex"),
-                PlyElement.describe(face_data, "face"),
-            ],
-            text=False,
-        )
-        ply.write(str(output_path))
-
-    def export_mesh_stl(self, output_path: str | Path) -> None:
-        """
-        Export a surface mesh (marching cubes) of the ROI mask as a binary STL file.
-        """
-        if self.mask_stack is None:
-            print("No mask stack available.")
-            return
-
-        try:
-            verts, faces = self._build_mesh()
-        except ImportError as e:
-            print(str(e))
-            return
-        except ValueError as e:
-            print(str(e))
-            return
-
-        if verts.size == 0 or faces.size == 0:
-            print("Cannot export STL: volume too small for marching cubes.")
+        elif fmt == "stl":
             with open(output_path, "wb") as f:
                 f.write(b"dicom2ply STL export".ljust(80, b" "))
-                f.write((0).to_bytes(4, byteorder="little", signed=False))
+                f.write(len(faces).to_bytes(4, byteorder="little", signed=False))
+
+                for tri in faces:
+                    v0, v1, v2 = verts[tri]
+                    n = np.cross(v1 - v0, v2 - v0)
+                    norm = np.linalg.norm(n)
+                    if norm > 0:
+                        n /= norm
+                    else:
+                        n = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+
+                    f.write(np.asarray(n, dtype=np.float32).tobytes())
+                    f.write(np.asarray(v0, dtype=np.float32).tobytes())
+                    f.write(np.asarray(v1, dtype=np.float32).tobytes())
+                    f.write(np.asarray(v2, dtype=np.float32).tobytes())
+                    f.write((0).to_bytes(2, byteorder="little", signed=False))
             return
 
-        # Binary STL: 80‑byte header, uint32 triangle count, then triangles
-        with open(output_path, "wb") as f:
-            f.write(b"dicom2ply STL export".ljust(80, b" "))
-            f.write(len(faces).to_bytes(4, byteorder="little", signed=False))
+        elif fmt == "obj":
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write("# dicom2ply OBJ export\n")
 
-            for tri in faces:
-                v0, v1, v2 = verts[tri]
+                for v in verts:
+                    f.write(f"v {v[0]} {v[1]} {v[2]}\n")
 
-                # Compute normal
-                n = np.cross(v1 - v0, v2 - v0)
-                norm = np.linalg.norm(n)
-                if norm > 0:
-                    n /= norm
-                else:
-                    n = np.array([0.0, 0.0, 0.0], dtype=np.float32)
+                for tri in faces:
+                    i, j, k = tri + 1
+                    f.write(f"f {i} {j} {k}\n")
+            return
 
-                f.write(np.asarray(n, dtype=np.float32).tobytes())
-                f.write(np.asarray(v0, dtype=np.float32).tobytes())
-                f.write(np.asarray(v1, dtype=np.float32).tobytes())
-                f.write(np.asarray(v2, dtype=np.float32).tobytes())
-                f.write((0).to_bytes(2, byteorder="little", signed=False))
+        else:
+            raise ValueError(f"Unknown mesh format: {fmt}")
+
+    def export_mesh_ply(self, output_path: str | Path) -> None:
+        verts, faces = self._build_mesh()
+        self._write_mesh(Path(output_path), verts, faces, "ply")
+
+    def export_mesh_stl(self, output_path: str | Path) -> None:
+        verts, faces = self._build_mesh()
+        self._write_mesh(Path(output_path), verts, faces, "stl")
 
     def export_mesh_obj(self, output_path: str | Path) -> None:
-        """
-        Export a surface mesh (marching cubes) of the ROI mask as a Wavefront OBJ file.
-        """
-        if self.mask_stack is None:
-            print("No mask stack available.")
-            return
-
-        try:
-            verts, faces = self._build_mesh()
-        except ImportError as e:
-            print(str(e))
-            return
-        except ValueError as e:
-            print(str(e))
-            return
-
-        if verts.size == 0 or faces.size == 0:
-            print("Cannot export OBJ: volume too small for marching cubes.")
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write("# dicom2ply OBJ export (empty mesh)\n")
-            return
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write("# dicom2ply OBJ export\n")
-
-            for v in verts:
-                f.write(f"v {v[0]} {v[1]} {v[2]}\n")
-
-            # OBJ is 1‑indexed
-            for tri in faces:
-                i, j, k = tri + 1
-                f.write(f"f {i} {j} {k}\n")
+        verts, faces = self._build_mesh()
+        self._write_mesh(Path(output_path), verts, faces, "obj")
 
     def get_voxel_coordinates(self) -> np.ndarray:
         """
