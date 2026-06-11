@@ -275,3 +275,62 @@ def write_roi_las(roi: RegionOfInterest, directory: str) -> None:
     file_name = os.path.join(directory, f"roi_{roi.name}.las")
     logger.info(f"Writing LAS for ROI '{roi.name}' → {file_name}")
     las.write(file_name)
+
+
+def write_roi_ply_mesh(roi: RegionOfInterest, directory: str) -> None:
+    """
+    Export ROI as a triangulated PLY mesh.
+    Each contour is triangulated independently using fan triangulation.
+    """
+
+    os.makedirs(directory, exist_ok=True)
+
+    from dicom2ply.exporters import triangulate_polygon
+
+    vertices: list[NDArray[np.float32]] = []
+    faces: list[NDArray[np.int32]] = []
+    offset = 0
+
+    for contour in roi.contours:
+        pts = contour.points_patient.astype(np.float32)
+
+        # Always append vertices
+        vertices.append(pts)
+
+        # Triangulate only if enough points
+        if pts.shape[0] >= 3:
+            tri = triangulate_polygon(pts)
+            if tri.size > 0:
+                faces.append(tri + offset)
+
+        offset += len(pts)
+
+    if not vertices:
+        logger.warning(f"No points for ROI '{roi.name}', skipping mesh export")
+        return
+
+    verts = np.vstack(vertices).astype(np.float32)
+    face_arr = (
+        np.vstack(faces).astype(np.int32) if faces else np.zeros((0, 3), dtype=np.int32)
+    )
+
+    vertex_dtype = [("x", "f4"), ("y", "f4"), ("z", "f4")]
+    vertex_data = np.zeros(len(verts), dtype=vertex_dtype)
+    vertex_data["x"], vertex_data["y"], vertex_data["z"] = verts.T
+
+    face_dtype = [("vertex_indices", "i4", (3,))]
+    face_data = np.zeros(len(face_arr), dtype=face_dtype)
+    if len(face_arr) > 0:
+        face_data["vertex_indices"] = face_arr
+
+    ply = PlyData(
+        [
+            PlyElement.describe(vertex_data, "vertex"),
+            PlyElement.describe(face_data, "face"),
+        ],
+        text=False,
+    )
+
+    file_name = os.path.join(directory, f"roi_{roi.name}_mesh.ply")
+    logger.info(f"Writing PLY mesh for ROI '{roi.name}' → {file_name}")
+    ply.write(file_name)

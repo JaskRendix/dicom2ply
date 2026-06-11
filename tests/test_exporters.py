@@ -6,6 +6,7 @@ from dicom2ply.exporters import (
     triangulate_polygon,
     write_roi_las,
     write_roi_ply,
+    write_roi_ply_mesh,
     write_roi_ply_points,
 )
 
@@ -192,3 +193,87 @@ def test_large_roi(tmp_path, num_contours, pts_per_contour):
     outfile = outdir / "roi_Large_points.ply"
     assert outfile.exists()
     assert outfile.stat().st_size > 0
+
+
+def test_write_roi_ply_mesh_triangle(tmp_path):
+    roi = DummyROI(
+        "MeshTri",
+        contours=[
+            DummyContour(
+                [[0, 0, 0], [1, 0, 0], [0, 1, 0]],
+                hu=[10, 20, 30],
+                slice_pos=0.0,
+            )
+        ],
+    )
+
+    outdir = tmp_path / "mesh_tri"
+    write_roi_ply_mesh(roi, outdir)
+
+    outfile = outdir / "roi_MeshTri_mesh.ply"
+    assert outfile.exists()
+    assert outfile.stat().st_size > 0
+
+
+def test_write_roi_ply_mesh_quad(tmp_path):
+    roi = DummyROI(
+        "MeshQuad",
+        contours=[
+            DummyContour(
+                [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]],
+                hu=[10, 20, 30, 40],
+                slice_pos=0.0,
+            )
+        ],
+    )
+
+    outdir = tmp_path / "mesh_quad"
+    write_roi_ply_mesh(roi, outdir)
+
+    outfile = outdir / "roi_MeshQuad_mesh.ply"
+    assert outfile.exists()
+    assert outfile.stat().st_size > 0
+
+
+def test_write_roi_ply_mesh_multiple_contours(tmp_path):
+    roi = DummyROI(
+        "MeshMulti",
+        contours=[
+            DummyContour([[0, 0, 0], [1, 0, 0], [0, 1, 0]], hu=[1, 2, 3]),
+            DummyContour([[2, 2, 0], [3, 2, 0], [2, 3, 0]], hu=[4, 5, 6]),
+        ],
+    )
+
+    outdir = tmp_path / "mesh_multi"
+    write_roi_ply_mesh(roi, outdir)
+
+    outfile = outdir / "roi_MeshMulti_mesh.ply"
+    assert outfile.exists()
+    assert outfile.stat().st_size > 0
+
+
+def test_write_roi_ply_mesh_degenerate(tmp_path):
+    roi = DummyROI(
+        "MeshDegenerate",
+        contours=[
+            DummyContour([[0, 0, 0], [0, 0, 0]], hu=[1, 1]),  # < 3 points
+        ],
+    )
+
+    outdir = tmp_path / "mesh_degenerate"
+    write_roi_ply_mesh(roi, outdir)
+
+    outfile = outdir / "roi_MeshDegenerate_mesh.ply"
+    # File should still be created, but contain only vertices
+    assert outfile.exists()
+    assert outfile.stat().st_size > 0
+
+
+def test_write_roi_ply_mesh_empty_roi(tmp_path, caplog):
+    roi = DummyROI("MeshEmpty", contours=[])
+
+    outdir = tmp_path / "mesh_empty"
+    write_roi_ply_mesh(roi, outdir)
+
+    assert "No points for ROI" in caplog.text
+    assert not (outdir / "roi_MeshEmpty_mesh.ply").exists()

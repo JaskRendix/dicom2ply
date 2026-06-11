@@ -331,3 +331,97 @@ def test_patient_duplicate_roi_numbers_last_wins(tmp_path, synthetic_ct):
 
     assert p.roi_names == ["SecondROI"]
     assert "SecondROI" in p.regions
+
+
+def test_dump_exporters_calls_correct_writers(
+    tmp_path, synthetic_ct, synthetic_rtstruct, monkeypatch
+):
+    # Build synthetic DICOM directory
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    (dicom_dir / "CT1.dcm").write_bytes(Path(synthetic_ct).read_bytes())
+    (dicom_dir / "RS1.dcm").write_bytes(Path(synthetic_rtstruct).read_bytes())
+
+    p = Patient(str(dicom_dir), debug=False)
+
+    calls = {
+        "ply": [],
+        "ply_rgb": [],
+        "las": [],
+        "mesh": [],
+    }
+
+    # Fake exporters
+    def fake_ply(roi, directory):
+        calls["ply"].append(roi.name)
+
+    def fake_ply_rgb(roi, directory):
+        calls["ply_rgb"].append(roi.name)
+
+    def fake_las(roi, directory):
+        calls["las"].append(roi.name)
+
+    def fake_mesh(roi, directory):
+        calls["mesh"].append(roi.name)
+
+    # Monkeypatch exporters
+    monkeypatch.setattr("dicom2ply.exporters.write_roi_ply", fake_ply)
+    monkeypatch.setattr("dicom2ply.exporters.write_roi_ply_points", fake_ply_rgb)
+    monkeypatch.setattr("dicom2ply.exporters.write_roi_las", fake_las)
+    monkeypatch.setattr("dicom2ply.exporters.write_roi_ply_mesh", fake_mesh)
+
+    # Run with selective flags
+    p.dump_exporters(
+        tmp_path / "out",
+        export_ply=True,
+        export_ply_rgb=True,
+        export_las=False,
+        export_mesh=True,
+    )
+
+    # Expected ROI names
+    expected = set(p.roi_names)
+
+    # Assertions
+    assert set(calls["ply"]) == expected
+    assert set(calls["ply_rgb"]) == expected
+    assert set(calls["mesh"]) == expected
+    assert calls["las"] == []  # disabled
+
+
+def test_dump_exporters_no_flags(
+    tmp_path, synthetic_ct, synthetic_rtstruct, monkeypatch
+):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    (dicom_dir / "CT1.dcm").write_bytes(Path(synthetic_ct).read_bytes())
+    (dicom_dir / "RS1.dcm").write_bytes(Path(synthetic_rtstruct).read_bytes())
+
+    p = Patient(str(dicom_dir), debug=False)
+
+    calls = {"ply": [], "rgb": [], "las": [], "mesh": []}
+
+    monkeypatch.setattr(
+        "dicom2ply.exporters.write_roi_ply", lambda r, d: calls["ply"].append(r.name)
+    )
+    monkeypatch.setattr(
+        "dicom2ply.exporters.write_roi_ply_points",
+        lambda r, d: calls["rgb"].append(r.name),
+    )
+    monkeypatch.setattr(
+        "dicom2ply.exporters.write_roi_las", lambda r, d: calls["las"].append(r.name)
+    )
+    monkeypatch.setattr(
+        "dicom2ply.exporters.write_roi_ply_mesh",
+        lambda r, d: calls["mesh"].append(r.name),
+    )
+
+    p.dump_exporters(
+        tmp_path / "out",
+        export_ply=False,
+        export_ply_rgb=False,
+        export_las=False,
+        export_mesh=False,
+    )
+
+    assert calls == {"ply": [], "rgb": [], "las": [], "mesh": []}

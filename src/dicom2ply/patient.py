@@ -342,3 +342,56 @@ class Patient:
             if export_nifti:
                 logger.info(f"Exporting NIfTI for ROI '{name}'")
                 roi.export_nifti(output_dir / f"{name}.nii.gz")
+
+    def dump_exporters(
+        self,
+        directory: str | Path = ".",
+        names: Iterable[str] | None = None,
+        *,
+        export_ply: bool = True,
+        export_ply_rgb: bool = False,
+        export_las: bool = False,
+        export_mesh: bool = False,
+    ) -> None:
+        """
+        Export ROIs using the extended exporters.
+
+        Parameters
+        ----------
+        export_ply:
+            Export basic PLY point cloud (XYZ, normals, HU, slice_pos).
+        export_ply_rgb:
+            Export PLY with HU→RGB color.
+        export_las:
+            Export LAS/LAZ point cloud (optional dependency).
+        export_mesh:
+            Export triangulated mesh as PLY (faces).
+        """
+
+        from dicom2ply.exporters import (
+            write_roi_las,
+            write_roi_ply,
+            write_roi_ply_mesh,
+            write_roi_ply_points,
+        )
+
+        names = list(names or self.roi_names)
+        output_dir = Path(directory)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for i, name in enumerate(names, start=1):
+            logger.info(f"[{i}/{len(names)}] Exporting ROI '{name}'")
+
+            roi = self.get_roi(name)
+
+            if export_ply:
+                write_roi_ply(roi, output_dir)
+
+            if export_ply_rgb:
+                write_roi_ply_points(roi, output_dir)
+
+            if export_las:
+                write_roi_las(roi, output_dir)
+
+            if export_mesh:
+                write_roi_ply_mesh(roi, output_dir)
