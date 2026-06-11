@@ -33,6 +33,34 @@ class Contour:
     stats: ContourStats = field(default_factory=ContourStats)
     slice_pos: float | None = None
 
+    @property
+    def points_patient(self) -> np.ndarray:
+        """
+        Return Nx3 array of contour points in patient-space (mm).
+        """
+        return np.column_stack([self.x, self.y, self.z])
+
+    @property
+    def points_pixel(self) -> np.ndarray:
+        """
+        Return Nx2 array of contour points in pixel coordinates (row, col).
+        Requires that compute() has been called (ds must be loaded).
+        """
+        if self.ds is None:
+            raise RuntimeError(
+                "Contour.compute() must run before accessing pixel points"
+            )
+
+        row, col = patient_to_pixel(self.points_patient, self.ds)
+        return np.column_stack([row, col])
+
+    @property
+    def voxel_points(self) -> np.ndarray:
+        """
+        Alias for points_pixel, for compatibility with voxel-based workflows.
+        """
+        return self.points_pixel
+
     @classmethod
     def from_rt(
         cls, contour_ds: Dataset, bins: int, cache, planarity_tol: float = 1e-2
