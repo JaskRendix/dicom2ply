@@ -1,25 +1,24 @@
 # dicom2ply
 
 `dicom2ply` converts DICOM RT Structure Set (RTSTRUCT) contours into 3D geometric data.  
-Each ROI can be exported as a PLY point cloud, a NIfTI mask, a mesh, PNG slices, or voxel coordinates.
+Each ROI can be exported as point clouds, meshes, masks, slices, or voxel coordinates.
 
-This is a modern rewrite of the original project by Christopher M. Poole  
-(<https://github.com/christopherpoole/dicom2ply>), updated for Python 3 and a modular, tested architecture.
+Modern rewrite of the original project by Christopher M. Poole (<https://github.com/christopherpoole/dicom2ply>).
 
 ---
 
 ## Features
 
-- Extracts ROI contours from DICOM RTSTRUCT files  
+- Extracts ROI contours from RTSTRUCT  
 - Reconstructs 3D coordinates using CT slice geometry  
-- Exports one binary PLY file per ROI  
+- Exports one binary PLY point cloud per ROI  
 - ROI selection:
-  - `--names` for explicit ROI lists  
-  - `--filter-name` for exact matches  
-  - `--filter-pattern` for glob patterns  
+  - `--names`
+  - `--filter-name`
+  - `--filter-pattern`
 - ROI inspection:
-  - `--list-rois` prints ROI names and basic stats  
-- Additional export formats:
+  - `--list-rois`
+- Export formats:
   - Binary mask NIfTI (`--nifti`)
   - Float32 mask NIfTI (`--float-nifti`)
   - ROI statistics JSON (`--json`)
@@ -27,27 +26,25 @@ This is a modern rewrite of the original project by Christopher M. Poole
   - PNG mask slices (`--png-slices`)
   - Marching‑cubes meshes: PLY, STL, OBJ (`--mesh`, `--stl`, `--obj`)
   - Voxel coordinates (`--coords`)
-- Batch processing via YAML config (`--config`)
+  - Extended exporters:
+    - HU→RGB PLY (`--ply-rgb`)
+    - LAS/LAZ point clouds (`--las`)
+    - Triangulated contour meshes (`--tri-mesh`)
+- Batch processing via YAML (`--config`)
 - Structured logging with progress indicators
 - Modular codebase (`contour`, `roi`, `ct_cache`, `geometry`, `masking`, `patient`, `exporters`)
-- Full test suite and GitHub Actions CI
-- Modern `src/` layout and Python packaging
+- Full test suite and CI
+- Modern `src/` layout and packaging
 
 ---
 
 ## Installation
 
 ```
-pip install dicom2ply   # not yet on PyPI
-```
-
-From source:
-
-```
 pip install -e .
 ```
 
-Requires Python 3.10 or newer.
+Requires Python 3.10+.
 
 Optional dependencies:
 
@@ -55,6 +52,7 @@ Optional dependencies:
 pip install dicom2ply[imageio]
 pip install dicom2ply[nifti]
 pip install dicom2ply[yaml]
+pip install dicom2ply[laspy]
 pip install dicom2ply[test]
 ```
 
@@ -69,15 +67,15 @@ dicom2ply <dicom_dir> <output_dir> [options]
 ### Required arguments
 
 - `dicom_dir`: directory containing CT slices and one RTSTRUCT  
-- `output_dir`: directory where output files are written  
+- `output_dir`: directory for output files  
 
 ---
 
 ## ROI selection
 
 ```
---names ROI1 ROI2 ...
---filter-name ROI1 --filter-name ROI2
+--names ROI1 ROI2
+--filter-name ROI1
 --filter-pattern "*GTV*"
 ```
 
@@ -91,7 +89,7 @@ If no selection flags are provided, all ROIs are exported.
 --list-rois
 ```
 
-Prints ROI names and basic statistics, then exits.
+Prints ROI names and basic statistics.
 
 ---
 
@@ -104,10 +102,13 @@ Prints ROI names and basic statistics, then exits.
 | `--json` | ROI statistics JSON |
 | `--save-metadata` | Minimal metadata JSON |
 | `--png-slices` | PNG mask slices |
-| `--mesh` | PLY mesh |
+| `--mesh` | Marching‑cubes PLY mesh |
 | `--stl` | STL mesh |
 | `--obj` | OBJ mesh |
 | `--coords` | Voxel coordinates `.npy` |
+| `--ply-rgb` | HU→RGB PLY point cloud |
+| `--las` | LAS/LAZ point cloud |
+| `--tri-mesh` | Triangulated contour mesh PLY |
 
 ---
 
@@ -117,7 +118,7 @@ Prints ROI names and basic statistics, then exits.
 --config config.yaml
 ```
 
-YAML file must contain a list of runs:
+Example:
 
 ```yaml
 - dicom_dir: ./dicom
@@ -130,15 +131,13 @@ YAML file must contain a list of runs:
 
 ## Logging
 
-Default logging prints high‑level progress.
-
 ```
 --debug
 ```
 
-Enables detailed logging for CT indexing, geometry checks, contour validation, and mesh generation.
+Enables detailed logging.
 
-Progress indicators show ROI export position:
+Progress indicator:
 
 ```
 [1/3] Exporting ROI 'GTV'
@@ -151,15 +150,18 @@ Progress indicators show ROI export position:
 ```
 dicom2ply ./dicom ./out \
     --filter-pattern "*TV" \
-    --json --mesh --png-slices --save-metadata
+    --json --mesh --png-slices --save-metadata --ply-rgb --las --tri-mesh
 ```
 
 Produces:
 
 - `roi_GTV.ply`, `roi_CTV.ply`
+- `roi_GTV_points.ply` (RGB)
+- `roi_GTV.las`
+- `roi_GTV_mesh.ply` (triangulated)
 - `GTV.json`, `CTV.json`
 - `GTV_meta.json`, `CTV_meta.json`
-- `GTV_mesh.ply`, `CTV_mesh.ply`
+- `GTV_mesh.ply`, `CTV_mesh.ply` (marching‑cubes)
 - `GTV_slices/...`, `CTV_slices/...`
 
 ---
@@ -172,6 +174,7 @@ from dicom2ply.patient import Patient
 p = Patient("/path/to/dicom")
 
 p.dump_ply(directory="/path/to/out")
+p.dump_exporters(directory="/path/to/out", export_ply_rgb=True, export_las=True)
 
 roi = p.get_roi("GTV")
 roi.export_mask_nifti_float("GTV_float.nii.gz")
@@ -215,10 +218,11 @@ Covers:
 - Contour parsing  
 - CT slice lookup  
 - PLY writing  
+- Extended exporters (PLY‑RGB, LAS, triangulated mesh)  
 - CLI execution  
 - ROI filtering and listing  
 - Metadata export  
-- YAML config handling  
+- YAML config  
 - Logging and error propagation  
 
 ---
@@ -229,4 +233,4 @@ Covers:
 - Standard RTSTRUCT contour encoding  
 - No gantry tilt  
 - No interpolation between missing slices  
-- Mesh export requires a non‑empty mask volume  
+- Marching‑cubes mesh export requires a non‑empty mask volume  
