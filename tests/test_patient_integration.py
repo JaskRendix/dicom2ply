@@ -165,7 +165,7 @@ def test_patient_dump_ply_invokes_writer(
     def fake_writer(roi, directory):
         calls.append(roi.name)
 
-    monkeypatch.setattr("dicom2ply.ply_writer.write_roi_ply", fake_writer)
+    monkeypatch.setattr("dicom2ply.exporters.write_roi_ply", fake_writer)
 
     p.dump_ply(directory=str(tmp_path))
 

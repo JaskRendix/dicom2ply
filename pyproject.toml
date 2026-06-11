@@ -26,6 +26,7 @@ dependencies = [
 imageio = ["imageio"]
 nifti = ["nibabel"]
 yaml = ["yaml"]
+lapsy = ["lapsy"]
 test = ["pytest", "pytest-cov"]
 
 [project.scripts]

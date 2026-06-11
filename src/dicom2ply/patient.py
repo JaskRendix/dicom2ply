@@ -325,7 +325,7 @@ class Patient:
         names: Iterable[str] | None = None,
         export_nifti: bool = False,
     ) -> None:
-        from dicom2ply.ply_writer import write_roi_ply
+        from dicom2ply.exporters import write_roi_ply
 
         names = list(names or self.roi_names)
         if not names:

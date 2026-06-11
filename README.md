@@ -29,7 +29,7 @@ This is a modern rewrite of the original project by Christopher M. Poole
   - Voxel coordinates (`--coords`)
 - Batch processing via YAML config (`--config`)
 - Structured logging with progress indicators
-- Modular codebase (`contour`, `roi`, `ct_cache`, `geometry`, `masking`, `patient`, `ply_writer`)
+- Modular codebase (`contour`, `roi`, `ct_cache`, `geometry`, `masking`, `patient`, `exporters`)
 - Full test suite and GitHub Actions CI
 - Modern `src/` layout and Python packaging
 
@@ -193,7 +193,7 @@ src/dicom2ply/
     geometry.py
     masking.py
     patient.py
-    ply_writer.py
+    exporters.py
     roi.py
 tests/
 .github/workflows/tests.yml
