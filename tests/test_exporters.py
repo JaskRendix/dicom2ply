@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from plyfile import PlyData
 
 from dicom2ply.exporters import (
     hu_to_rgb,
@@ -277,3 +278,74 @@ def test_write_roi_ply_mesh_empty_roi(tmp_path, caplog):
 
     assert "No points for ROI" in caplog.text
     assert not (outdir / "roi_MeshEmpty_mesh.ply").exists()
+
+
+def test_write_roi_ply_mesh_mixed_contours(tmp_path):
+    roi = DummyROI(
+        "MeshMixed",
+        contours=[
+            DummyContour([[0, 0, 0], [1, 0, 0]], hu=[1, 2]),  # degenerate
+            DummyContour([[0, 0, 0], [1, 0, 0], [0, 1, 0]], hu=[3, 4, 5]),  # valid
+        ],
+    )
+
+    outdir = tmp_path / "mesh_mixed"
+    write_roi_ply_mesh(roi, outdir)
+
+    outfile = outdir / "roi_MeshMixed_mesh.ply"
+    assert outfile.exists()
+    assert outfile.stat().st_size > 0
+
+
+def test_write_roi_ply_mesh_structure(tmp_path):
+    roi = DummyROI(
+        "MeshStruct",
+        contours=[
+            DummyContour([[0, 0, 0], [1, 0, 0], [0, 1, 0]]),  # 1 triangle
+            DummyContour(
+                [[2, 2, 0], [3, 2, 0], [2, 3, 0], [3, 3, 0]]
+            ),  # quad → 2 triangles
+        ],
+    )
+
+    outdir = tmp_path / "mesh_struct"
+    write_roi_ply_mesh(roi, outdir)
+
+    outfile = outdir / "roi_MeshStruct_mesh.ply"
+    assert outfile.exists()
+
+    ply = PlyData.read(outfile)
+
+    # Vertex count = 3 + 4 = 7
+    assert len(ply["vertex"].data) == 7
+
+    # Face count = 1 + 2 = 3
+    assert len(ply["face"].data) == 3
+
+    # Check triangle sizes
+    for face in ply["face"].data:
+        assert len(face[0]) == 3
+
+
+def test_write_roi_ply_mesh_index_offsets(tmp_path):
+    roi = DummyROI(
+        "MeshOffsets",
+        contours=[
+            DummyContour([[0, 0, 0], [1, 0, 0], [0, 1, 0]]),  # vertices 0,1,2
+            DummyContour([[10, 10, 0], [11, 10, 0], [10, 11, 0]]),  # vertices 3,4,5
+        ],
+    )
+
+    outdir = tmp_path / "mesh_offsets"
+    write_roi_ply_mesh(roi, outdir)
+
+    outfile = outdir / "roi_MeshOffsets_mesh.ply"
+    ply = PlyData.read(outfile)
+
+    faces = [list(face[0]) for face in ply["face"].data]
+
+    # First contour triangle should reference 0,1,2
+    assert [0, 1, 2] in faces
+
+    # Second contour triangle should reference 3,4,5
+    assert [3, 4, 5] in faces

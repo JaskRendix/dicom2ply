@@ -573,3 +573,91 @@ def test_cli_yaml_config(tmp_path, synthetic_ct, synthetic_rtstruct):
 
     files = list((tmp_path / "out_cfg").glob("*.ply"))
     assert files
+
+
+def test_cli_ply_rgb_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(outdir), "--ply-rgb"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    files = list(outdir.glob("*_points.ply"))
+    assert files, "Expected RGB PLY output"
+
+
+def test_cli_las_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(outdir), "--las"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    files = list(outdir.glob("*.las"))
+    assert files, "Expected LAS output"
+
+
+def test_cli_tri_mesh_export(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    result = subprocess.run(
+        ["dicom2ply", str(dicom_dir), str(outdir), "--tri-mesh"],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    files = list(outdir.glob("*_mesh.ply"))
+    assert files, "Expected triangulated mesh PLY output"
+
+
+def test_cli_multiple_extended_exports(tmp_path, synthetic_ct, synthetic_rtstruct):
+    dicom_dir = tmp_path / "dicom"
+    dicom_dir.mkdir()
+    shutil.copy(synthetic_ct, dicom_dir / "CT.dcm")
+    shutil.copy(synthetic_rtstruct, dicom_dir / "RS.dcm")
+
+    outdir = tmp_path / "out"
+    outdir.mkdir()
+
+    result = subprocess.run(
+        [
+            "dicom2ply",
+            str(dicom_dir),
+            str(outdir),
+            "--ply-rgb",
+            "--las",
+            "--tri-mesh",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0
+    assert list(outdir.glob("*_points.ply"))
+    assert list(outdir.glob("*.las"))
+    assert list(outdir.glob("*_mesh.ply"))

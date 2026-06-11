@@ -230,7 +230,7 @@ def write_roi_las(roi: RegionOfInterest, directory: str) -> None:
     except ImportError as e:
         raise ImportError(
             "LAS export requires the optional dependency 'laspy'. "
-            "Install it via: pip install dicom2ply[lapsy]"
+            "Install it via: pip install dicom2ply[laspy]"
         ) from e
 
     os.makedirs(directory, exist_ok=True)

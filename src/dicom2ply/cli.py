@@ -123,6 +123,24 @@ def parse_args() -> argparse.Namespace:
         help="Path to YAML config file describing one or more runs",
     )
 
+    parser.add_argument(
+        "--ply-rgb",
+        action="store_true",
+        help="Export PLY point cloud with HU→RGB color",
+    )
+
+    parser.add_argument(
+        "--las",
+        action="store_true",
+        help="Export LAS/LAZ point cloud (requires laspy)",
+    )
+
+    parser.add_argument(
+        "--tri-mesh",
+        action="store_true",
+        help="Export triangulated contour mesh as PLY",
+    )
+
     return parser.parse_args()
 
 
@@ -241,6 +259,16 @@ def run_conversion(
     patient.dump_ply(
         directory=str(output_dir), names=final_names, export_nifti=args.nifti
     )
+    if args.ply_rgb or args.las or args.tri_mesh:
+        logger.info("Exporting extended ROI formats...")
+        patient.dump_exporters(
+            directory=str(output_dir),
+            names=final_names,
+            export_ply=False,  # already done above
+            export_ply_rgb=args.ply_rgb,
+            export_las=args.las,
+            export_mesh=args.tri_mesh,
+        )
 
     # Per-ROI exports with progress reporting
     total = len(final_names)
