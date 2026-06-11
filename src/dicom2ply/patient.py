@@ -34,49 +34,231 @@ class Patient:
         reader: Callable[..., FileDataset] = pydicom.dcmread,
         walker: Callable[[Path], Iterable[Path]] | None = None,
     ) -> None:
-        # Configure logger level based on debug flag
-        if debug:
-            logger.setLevel(logging.DEBUG)
-        else:
-            logger.setLevel(logging.INFO)
 
+        self._configure_logging(debug)
+
+        # Store parameters
         self.debug = debug
         self.bins = bins
         self.slice_tol = slice_tol
         self.planarity_tol = planarity_tol
         self.validate = validate
         self.strict_geometry = strict_geometry
+
         self.dicom_dir = Path(dicom_dir)
         self._reader = reader
         self._walker = walker or (lambda p: (f for f in p.iterdir() if f.is_file()))
 
-        # All files in the directory (tests expect this attribute name)
-        self._files: list[Path] = list(self._walker(self.dicom_dir))
-        logger.debug(f"Found {len(self._files)} files in {self.dicom_dir}")
+        # Load files and datasets
+        self._files = self._load_files()
+        self._datasets = self._read_all_datasets()
 
-        # Single-pass read cache: Path -> FileDataset
-        self._datasets: dict[Path, FileDataset] = self._read_all_datasets()
+        # Load RTSTRUCT
+        self.structure = self._load_rtstruct()
 
-        # Tests expect this exact attribute name
-        self.structure: FileDataset = self._load_rtstruct()
+        # CT slice indexing
+        self._ct_slices = self._index_ct_slices()
 
-        # Deterministic CT slice index
-        self._ct_slices: dict[str, CTSlice] = self._index_ct_slices()
-
-        # Tests expect ct_slices and ct_index as SOPUID -> path strings
-        self.ct_slices: dict[str, str] = {
-            uid: s.path.as_posix() for uid, s in self._ct_slices.items()
-        }
-        self.ct_index: dict[str, str] = dict(self.ct_slices)
+        # Tests expect these exact attributes
+        self.ct_slices = {uid: s.path.as_posix() for uid, s in self._ct_slices.items()}
+        self.ct_index = dict(self.ct_slices)
 
         # ROI metadata
-        self.region_names: dict[int, str] = self._extract_roi_names()
+        self.region_names = self._extract_roi_names()
+        self._roi_by_number = self._index_roi_contours()
 
-        # Pre-index ROIContourSequence by ReferencedROINumber
-        self._roi_by_number: dict[int, FileDataset] = self._index_roi_contours()
-
-        # Lazy cache of ROI name -> RegionOfInterest
+        # Lazy ROI cache
         self._roi_cache: dict[str, RegionOfInterest] = {}
+
+    def _configure_logging(self, debug: bool) -> None:
+        logger.setLevel(logging.DEBUG if debug else logging.INFO)
+
+    def _load_files(self) -> list[Path]:
+        files = list(self._walker(self.dicom_dir))
+        logger.debug(f"Found {len(files)} files in {self.dicom_dir}")
+        return files
+
+    def _read_all_datasets(self) -> dict[Path, FileDataset]:
+        datasets = {}
+        for path in self._files:
+            try:
+                ds = self._reader(path, stop_before_pixels=True)
+                datasets[path] = ds
+            except Exception:
+                logger.debug(f"Skipping unreadable DICOM file: {path}")
+        logger.debug(f"Loaded {len(datasets)} readable DICOM files")
+        return datasets
+
+    def _load_rtstruct(self) -> FileDataset:
+        for path, ds in self._datasets.items():
+            if getattr(ds, "Modality", None) == "RTSTRUCT":
+                logger.debug(f"RTSTRUCT found: {path}")
+                return ds
+        raise FileNotFoundError("No RTSTRUCT file found (Modality=RTSTRUCT).")
+
+    def _index_ct_slices(self) -> dict[str, CTSlice]:
+        from dicom2ply.geometry import slice_position
+
+        slices = []
+        ref_dims = None
+        ref_spacing = None
+        ref_orientation = None
+
+        inconsistent_dims = False
+        inconsistent_spacing = False
+        inconsistent_orientation = False
+
+        for path, ds in self._iter_ct_datasets():
+            sop = getattr(ds, "SOPInstanceUID", None)
+            if sop is None:
+                logger.debug(f"CT slice without SOPInstanceUID: {path}")
+                continue
+
+            geom = self._extract_ct_geometry(ds, path)
+            if geom is None:
+                continue
+
+            dims, spacing, orientation = geom
+
+            # First slice defines reference geometry
+            if ref_dims is None:
+                ref_dims = dims
+                ref_spacing = spacing
+                ref_orientation = orientation
+                logger.debug(
+                    f"Reference CT geometry: {dims[0]}x{dims[1]}, "
+                    f"spacing={spacing}, orientation={orientation}"
+                )
+            else:
+                inconsistent_dims |= dims != ref_dims
+                inconsistent_spacing |= spacing != ref_spacing
+                inconsistent_orientation |= orientation != ref_orientation
+
+            # Compute Z position
+            z = self._compute_slice_z(ds, path)
+            slices.append(CTSlice(str(sop), path, z))
+
+        # Sort slices by Z
+        slices.sort(key=lambda s: s.z)
+        logger.debug(f"Indexed {len(slices)} CT slices")
+
+        # Log geometry summary
+        self._log_ct_summary(
+            slices,
+            ref_dims,
+            ref_spacing,
+            ref_orientation,
+            inconsistent_dims,
+            inconsistent_spacing,
+            inconsistent_orientation,
+        )
+
+        # Strict geometry enforcement
+        if self.strict_geometry and (
+            inconsistent_dims or inconsistent_spacing or inconsistent_orientation
+        ):
+            raise RuntimeError("CT geometry inconsistent across slices (strict mode)")
+
+        return {s.sop_uid: s for s in slices}
+
+    def _iter_ct_datasets(self):
+        for path, ds in self._datasets.items():
+            if getattr(ds, "Modality", None) == "CT":
+                yield path, ds
+
+    def _extract_ct_geometry(self, ds, path):
+        try:
+            dims = (int(ds.Rows), int(ds.Columns))
+            spacing = (float(ds.PixelSpacing[0]), float(ds.PixelSpacing[1]))
+            iop = tuple(float(v) for v in ds.ImageOrientationPatient)
+            orientation = (tuple(iop[:3]), tuple(iop[3:]))
+            return dims, spacing, orientation
+        except Exception:
+            logger.debug(f"Missing geometry metadata in: {path}")
+            return None
+
+    def _compute_slice_z(self, ds, path):
+        from dicom2ply.geometry import slice_position
+
+        try:
+            return slice_position(ds)
+        except Exception:
+            logger.debug(f"Falling back to InstanceNumber for slice: {path}")
+            return float(getattr(ds, "InstanceNumber", 0))
+
+    def _log_ct_summary(
+        self,
+        slices,
+        dims,
+        spacing,
+        orientation,
+        inconsistent_dims,
+        inconsistent_spacing,
+        inconsistent_orientation,
+    ):
+        if not (self.debug or self.validate):
+            return
+
+        z_positions = [s.z for s in slices]
+        diffs = (
+            [
+                abs(z_positions[i + 1] - z_positions[i])
+                for i in range(len(z_positions) - 1)
+            ]
+            if len(z_positions) > 1
+            else []
+        )
+
+        logger.info("CT Geometry Summary:")
+        logger.info(f"  slices: {len(slices)}")
+        logger.info(f"  dimensions: {dims}")
+        logger.info(f"  pixel_spacing: {spacing}")
+
+        if diffs:
+            logger.info(
+                f"  slice_spacing (min/mean/max): "
+                f"{min(diffs):.4f}/{(sum(diffs)/len(diffs)):.4f}/{max(diffs):.4f}"
+            )
+
+        logger.info(f"  orientation_consistent: {not inconsistent_orientation}")
+
+    def _extract_roi_names(self) -> dict[int, str]:
+        names = {}
+
+        # Primary: RTROIObservationsSequence
+        for obs in getattr(self.structure, "RTROIObservationsSequence", []):
+            try:
+                number = int(obs.ObservationNumber)
+                label = str(getattr(obs, "ROIObservationLabel", "")).strip()
+                if label:
+                    names[number] = label
+            except Exception:
+                continue
+
+        # Fallback: StructureSetROISequence
+        if not names:
+            for roi in getattr(self.structure, "StructureSetROISequence", []):
+                try:
+                    number = int(roi.ROINumber)
+                    label = str(getattr(roi, "ROIName", "")).strip()
+                    if label:
+                        names[number] = label
+                except Exception:
+                    continue
+
+        logger.debug(f"Extracted ROI names: {names}")
+        return names
+
+    def _index_roi_contours(self) -> dict[int, FileDataset]:
+        index = {}
+        for roi in getattr(self.structure, "ROIContourSequence", []):
+            number = getattr(roi, "ReferencedROINumber", None)
+            try:
+                index[int(number)] = roi
+            except Exception:
+                continue
+        logger.debug(f"Indexed {len(index)} ROIContourSequence entries")
+        return index
 
     @property
     def roi_names(self) -> list[str]:
@@ -87,36 +269,17 @@ class Patient:
         if self._roi_cache:
             return dict(self._roi_cache)
 
-        roi_contours = getattr(self.structure, "ROIContourSequence", None)
-        if not roi_contours:
-            logger.debug("No ROIContourSequence found in RTSTRUCT")
-            return {}
-
-        for roi in roi_contours:
-            number = getattr(roi, "ReferencedROINumber", None)
-            if number is None:
-                continue
-
-            name = self.region_names.get(int(number))
-            if name is None:
-                continue
-
-            if not hasattr(roi, "ContourSequence"):
-                continue
-
-            if name in self._roi_cache:
-                continue
-
-            logger.debug(f"Loading ROI '{name}'")
-            region = RegionOfInterest.from_rt_roi(
-                roi_ds=roi,
-                name=name,
-                bins=self.bins,
-                ct_index=self.ct_index,
-                slice_tol=self.slice_tol,
-                planarity_tol=self.planarity_tol,
-            )
-            self._roi_cache[name] = region
+        for number, name in self.region_names.items():
+            roi_ds = self._roi_by_number.get(number)
+            if roi_ds and hasattr(roi_ds, "ContourSequence"):
+                self._roi_cache[name] = RegionOfInterest.from_rt_roi(
+                    roi_ds=roi_ds,
+                    name=name,
+                    bins=self.bins,
+                    ct_index=self.ct_index,
+                    slice_tol=self.slice_tol,
+                    planarity_tol=self.planarity_tol,
+                )
 
         return dict(self._roi_cache)
 
@@ -127,223 +290,22 @@ class Patient:
         if name in self._roi_cache:
             return self._roi_cache[name]
 
-        logger.debug(f"Loading ROI '{name}' on demand")
         roi = self._load_single_roi(name)
         self._roi_cache[name] = roi
         return roi
 
-    def dump_ply(
-        self,
-        directory: str | Path = ".",
-        names: Iterable[str] | None = None,
-        export_nifti: bool = False,
-    ) -> None:
-        from dicom2ply.ply_writer import write_roi_ply
-
-        if names is None:
-            names = self.roi_names
-
-        selected = list(names)
-        if not selected:
-            raise ValueError("No ROIs found in RTSTRUCT or no names provided.")
-
-        output_dir = Path(directory)
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        for i, name in enumerate(selected):
-            logger.info(f"[{i+1}/{len(selected)}] Exporting ROI '{name}' to PLY")
-            roi = self.get_roi(name)
-            write_roi_ply(roi, output_dir)
-
-            if export_nifti:
-                logger.info(f"Exporting NIfTI for ROI '{name}'")
-                roi.export_nifti(output_dir / f"{name}.nii.gz")
-
-    def _read_all_datasets(self) -> dict[Path, FileDataset]:
-        datasets: dict[Path, FileDataset] = {}
-        for path in self._files:
-            try:
-                ds = self._reader(path, stop_before_pixels=True)
-            except Exception:
-                logger.debug(f"Skipping unreadable DICOM file: {path}")
-                continue
-            datasets[path] = ds
-        logger.debug(f"Loaded {len(datasets)} readable DICOM files")
-        return datasets
-
-    def _load_rtstruct(self) -> FileDataset:
-        for path in self._files:
-            ds = self._datasets.get(path)
-            if ds is None:
-                continue
-
-            if getattr(ds, "Modality", None) == "RTSTRUCT":
-                logger.debug(f"RTSTRUCT found: {path}")
-                return ds
-
-        raise FileNotFoundError("No RTSTRUCT file found (Modality=RTSTRUCT).")
-
-    def _index_ct_slices(self) -> dict[str, CTSlice]:
-        from dicom2ply.geometry import slice_position
-
-        slices: list[CTSlice] = []
-
-        rows = cols = None
-        spacing = None
-        orientation = None
-        inconsistent_dims = False
-        inconsistent_spacing = False
-        inconsistent_orientation = False
-
-        for path in self._files:
-            ds = self._datasets.get(path)
-            if ds is None:
-                logger.debug(f"No dataset cached for: {path}")
-                continue
-
-            if getattr(ds, "Modality", None) != "CT":
-                continue
-
-            sop = getattr(ds, "SOPInstanceUID", None)
-            if sop is None:
-                logger.debug(f"CT slice without SOPInstanceUID: {path}")
-                continue
-
-            try:
-                r = int(ds.Rows)
-                c = int(ds.Columns)
-                px = float(ds.PixelSpacing[0])
-                py = float(ds.PixelSpacing[1])
-                iop = tuple(float(v) for v in ds.ImageOrientationPatient)
-            except Exception:
-                logger.debug(f"Missing geometry metadata in: {path}")
-                continue
-
-            if rows is None:
-                rows, cols = r, c
-                spacing = (px, py)
-                orientation = (tuple(iop[:3]), tuple(iop[3:]))
-                logger.debug(
-                    f"Reference CT geometry: {rows}x{cols}, spacing={spacing}, orientation={orientation}"
-                )
-            else:
-                if (r, c) != (rows, cols):
-                    logger.debug(
-                        f"Inconsistent CT dimensions: {(r, c)} vs {(rows, cols)} in {path}"
-                    )
-                    inconsistent_dims = True
-                if spacing and (px, py) != spacing:
-                    logger.debug(
-                        f"Inconsistent CT pixel spacing: {(px, py)} vs {spacing} in {path}"
-                    )
-                    inconsistent_spacing = True
-                if orientation and (tuple(iop[:3]), tuple(iop[3:])) != orientation:
-                    logger.debug(f"Inconsistent CT orientation in: {path}")
-                    inconsistent_orientation = True
-
-            try:
-                z = slice_position(ds)
-            except Exception:
-                z = float(getattr(ds, "InstanceNumber", 0))
-                logger.debug(f"Falling back to InstanceNumber for slice: {path}")
-
-            slices.append(CTSlice(sop_uid=str(sop), path=path, z=z))
-
-        slices.sort(key=lambda s: s.z)
-        logger.debug(f"Indexed {len(slices)} CT slices")
-
-        # Geometry validation summary (printed when debug or validate flag set)
-        num_slices = len(slices)
-        z_positions = [s.z for s in slices]
-        slice_spacing_info = None
-        if len(z_positions) > 1:
-            diffs = [
-                abs(z_positions[i + 1] - z_positions[i])
-                for i in range(len(z_positions) - 1)
-            ]
-            slice_spacing_info = {
-                "min": min(diffs),
-                "max": max(diffs),
-                "mean": sum(diffs) / len(diffs),
-            }
-
-        if self.debug or self.validate:
-            logger.info("CT Geometry Summary:")
-            logger.info(f"  slices: {num_slices}")
-            logger.info(f"  dimensions: {rows}x{cols}")
-            logger.info(f"  pixel_spacing: {spacing}")
-            if slice_spacing_info is not None:
-                logger.info(
-                    f"  slice_spacing (min/mean/max): {slice_spacing_info['min']:.4f}/"
-                    f"{slice_spacing_info['mean']:.4f}/{slice_spacing_info['max']:.4f}"
-                )
-            logger.info(f"  orientation_consistent: {not inconsistent_orientation}")
-
-        # Strict geometry enforcement
-        if self.strict_geometry and (
-            inconsistent_dims or inconsistent_spacing or inconsistent_orientation
-        ):
-            raise RuntimeError("CT geometry inconsistent across slices (strict mode)")
-
-        return {s.sop_uid: s for s in slices}
-
-    def _extract_roi_names(self) -> dict[int, str]:
-        names: dict[int, str] = {}
-
-        seq = getattr(self.structure, "RTROIObservationsSequence", [])
-        for obs in seq:
-            try:
-                number = int(obs.ObservationNumber)
-            except Exception:
-                continue
-            label = str(getattr(obs, "ROIObservationLabel", "")).strip()
-            if label:
-                names[number] = label
-
-        if not names:
-            seq2 = getattr(self.structure, "StructureSetROISequence", [])
-            for roi in seq2:
-                try:
-                    number = int(roi.ROINumber)
-                except Exception:
-                    continue
-                label = str(getattr(roi, "ROIName", "")).strip()
-                if label:
-                    names[number] = label
-
-        logger.debug(f"Extracted ROI names: {names}")
-        return names
-
-    def _index_roi_contours(self) -> dict[int, FileDataset]:
-        index: dict[int, FileDataset] = {}
-        seq = getattr(self.structure, "ROIContourSequence", [])
-        for roi in seq:
-            number = getattr(roi, "ReferencedROINumber", None)
-            if number is None:
-                continue
-            try:
-                num_int = int(number)
-            except Exception:
-                continue
-            index[num_int] = roi
-
-        logger.debug(f"Indexed {len(index)} ROIContourSequence entries")
-        return index
-
     def _load_single_roi(self, name: str) -> RegionOfInterest:
-        roi_number = None
-        for number, label in self.region_names.items():
-            if label == name:
-                roi_number = number
-                break
-
+        # Resolve name -> number
+        roi_number = next(
+            (num for num, label in self.region_names.items() if label == name),
+            None,
+        )
         if roi_number is None:
             raise KeyError(f"ROI '{name}' not found in RTROIObservationsSequence.")
 
         roi_ds = self._roi_by_number.get(roi_number)
         if roi_ds is None:
             raise KeyError(f"ROI '{name}' not found in ROIContourSequence.")
-
         if not hasattr(roi_ds, "ContourSequence"):
             raise KeyError(f"ROI '{name}' has no ContourSequence data.")
 
@@ -356,3 +318,27 @@ class Patient:
             slice_tol=self.slice_tol,
             planarity_tol=self.planarity_tol,
         )
+
+    def dump_ply(
+        self,
+        directory: str | Path = ".",
+        names: Iterable[str] | None = None,
+        export_nifti: bool = False,
+    ) -> None:
+        from dicom2ply.ply_writer import write_roi_ply
+
+        names = list(names or self.roi_names)
+        if not names:
+            raise ValueError("No ROIs found in RTSTRUCT or no names provided.")
+
+        output_dir = Path(directory)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        for i, name in enumerate(names):
+            logger.info(f"[{i+1}/{len(names)}] Exporting ROI '{name}' to PLY")
+            roi = self.get_roi(name)
+            write_roi_ply(roi, output_dir)
+
+            if export_nifti:
+                logger.info(f"Exporting NIfTI for ROI '{name}'")
+                roi.export_nifti(output_dir / f"{name}.nii.gz")
